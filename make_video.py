@@ -1,0 +1,338 @@
+"""Make one kids song video, start to finish.
+
+    python make_video.py "ABC song with friendly animals" [--minutes 2.5] [--no-wait]
+
+1. Gemini writes the lyrics, the music style and the look of the video     -> lyrics.json
+2. Kaggle GPU: ACE-Step sings the song, Whisper times every sung word      -> song.wav, words.json
+3. Gemini writes one scene per ~5 s of song, matched to the lyrics          -> scenes.json
+4. Kaggle GPU: LTX-Video makes a clip per scene (both T4s at once)          -> scenes/scene_001.mp4 ...
+5. This PC: clips + song + word-by-word lyric captions                      -> final.mp4, youtube.txt
+
+Everything for one video lives in videos/<date> - <topic>/. Each step is skipped when its
+output already exists, so running the same command again continues where it stopped.
+"""
+import argparse
+import datetime as dt
+import difflib
+import json
+import math
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+import urllib.request
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+JOBS = os.path.join(HERE, "kaggle_jobs")
+GEMINI_MODELS = ["gemini-3.7-flash", "gemini-3.1-flash-lite"]   # creative model first, the light one if it is busy
+SCENE_SECONDS = 121 / 24                                          # LTX: 121 frames at 24 fps
+VIDEO = {"width": 768, "height": 512, "frames": 121, "fps": 24, "steps": 40, "guidance": 3.0,
+         "model": "Lightricks/LTX-Video"}
+NEGATIVE = ("worst quality, low quality, blurry, jittery, distorted, deformed, extra limbs, text, letters, "
+            "watermark, logo, scary, dark, violent, realistic photo")
+CAPTION_FONT = "Arial Rounded MT Bold"
+
+
+def log(*a):
+    print(time.strftime("%H:%M:%S"), *a, flush=True)
+
+
+# ---------------------------------------------------------------- Gemini
+def gemini_key():
+    env = os.path.join(HERE, ".env")
+    if os.environ.get("GEMINI_API_KEY"):
+        return os.environ["GEMINI_API_KEY"]
+    for line in open(env, encoding="utf-8"):
+        if line.startswith("GEMINI_API_KEY="):
+            return line.split("=", 1)[1].strip()
+    sys.exit("No GEMINI_API_KEY in .env")
+
+
+def gemini_json(prompt, tries=3):
+    key = gemini_key()
+    body = json.dumps({"contents": [{"parts": [{"text": prompt}]}],
+                       "generationConfig": {"responseMimeType": "application/json", "temperature": 0.9}}).encode()
+    last = None
+    for model in GEMINI_MODELS:
+        for attempt in range(tries):
+            try:
+                req = urllib.request.Request(
+                    f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                    data=body, headers={"content-type": "application/json", "x-goog-api-key": key})
+                with urllib.request.urlopen(req, timeout=120) as r:
+                    j = json.load(r)
+                return json.loads(j["candidates"][0]["content"]["parts"][0]["text"])
+            except Exception as e:  # noqa: BLE001
+                last = e
+                time.sleep(5 * (attempt + 1))
+        log(f"  Gemini model {model} did not answer ({last}); trying the next one")
+    sys.exit(f"Gemini failed: {last}")
+
+
+# ---------------------------------------------------------------- Kaggle
+def kaggle_user():
+    r = subprocess.run(["kaggle", "config", "view"], capture_output=True, text=True)
+    m = re.search(r"username:\s*(\S+)", r.stdout)
+    if not m:
+        sys.exit("Kaggle is not set up (no username in `kaggle config view`). See README.")
+    return m.group(1)
+
+
+def kaggle_run(slug, template, job, workdir, wait=True):
+    """Send a GPU job (a script with JOB filled in) to Kaggle, wait for it, download its output."""
+    user = kaggle_user()
+    kdir = os.path.join(workdir, "jobs", slug)
+    os.makedirs(kdir, exist_ok=True)
+    code = open(os.path.join(JOBS, template), encoding="utf-8").read().replace("__JOB__", json.dumps(job))
+    open(os.path.join(kdir, "job.py"), "w", encoding="utf-8").write(code)
+    json.dump({"id": f"{user}/{slug}", "title": slug, "code_file": "job.py", "language": "python",
+               "kernel_type": "script", "is_private": True, "enable_gpu": True, "enable_internet": True,
+               "dataset_sources": [], "competition_sources": [], "kernel_sources": []},
+              open(os.path.join(kdir, "kernel-metadata.json"), "w"), indent=1)
+    r = subprocess.run(["kaggle", "kernels", "push", "-p", kdir, "--accelerator", "NvidiaTeslaT4"],
+                       capture_output=True, text=True)
+    if r.returncode != 0 or "successfully" not in r.stdout.lower():
+        sys.exit(f"Kaggle push failed: {r.stdout}{r.stderr}")
+    log(f"  sent to Kaggle: https://www.kaggle.com/code/{user}/{slug}")
+    if not wait:
+        sys.exit("Sent. Run the same command again later to continue.")
+    last, t0 = "", time.time()
+    while True:
+        s = subprocess.run(["kaggle", "kernels", "status", f"{user}/{slug}"], capture_output=True, text=True).stdout
+        state = (re.search(r'status "?([\w.]+)', s) or [None, s.strip()])[1]
+        if state != last:
+            log(f"  Kaggle: {state.split('.')[-1].lower()} (after {int((time.time() - t0) / 60)} min)")
+            last = state
+        if any(k in state.upper() for k in ("COMPLETE", "ERROR", "CANCEL")):
+            break
+        time.sleep(60)
+    out = os.path.join(kdir, "out")
+    shutil.rmtree(out, ignore_errors=True)
+    os.makedirs(out)
+    subprocess.run(["kaggle", "kernels", "output", f"{user}/{slug}", "-p", out], capture_output=True, text=True)
+    if "COMPLETE" not in state.upper():
+        logf = [f for f in os.listdir(out) if f.endswith(".log")]
+        tail = ""
+        if logf:
+            try:
+                tail = "".join(e.get("data", "") for e in json.load(open(os.path.join(out, logf[0]), encoding="utf-8")))[-2500:]
+            except Exception:  # noqa: BLE001
+                tail = open(os.path.join(out, logf[0]), encoding="utf-8", errors="replace").read()[-2500:]
+        sys.exit(f"Kaggle job {slug} ended with {state}. Last log lines:\n{tail}")
+    return out
+
+
+# ---------------------------------------------------------------- lyrics timing
+def tokens(text):
+    return re.findall(r"[a-z0-9']+", text.lower())
+
+
+def lyric_lines(lyrics):
+    return [ln.strip() for ln in lyrics.splitlines() if ln.strip() and not re.match(r"^\[.*\]$", ln.strip())]
+
+
+def time_lines(lines, words, duration):
+    """Start/end (and per-word times) of every lyric line, by matching the lyric words to the words Whisper
+    heard. Words Whisper missed get times in between their matched neighbours."""
+    lyr = [(li, t) for li, ln in enumerate(lines) for t in tokens(ln)]
+    heard = [tokens(w["w"])[0] if tokens(w["w"]) else "" for w in words]
+    times = [None] * len(lyr)
+    sm = difflib.SequenceMatcher(a=[t for _, t in lyr], b=heard, autojunk=False)
+    for blk in sm.get_matching_blocks():
+        for k in range(blk.size):
+            w = words[blk.b + k]
+            times[blk.a + k] = (w["s"], w["e"])
+    known = [i for i, t in enumerate(times) if t]
+    if not known:   # nothing matched: spread the lines evenly
+        step = duration / max(1, len(lyr))
+        times = [(i * step, (i + 1) * step) for i in range(len(lyr))]
+    else:
+        for i in range(len(times)):
+            if times[i]:
+                continue
+            prev = max((k for k in known if k < i), default=None)
+            nxt = min((k for k in known if k > i), default=None)
+            a = times[prev][1] if prev is not None else 0.0
+            b = times[nxt][0] if nxt is not None else min(duration, a + 2.0)
+            lo, hi = (prev if prev is not None else -1), (nxt if nxt is not None else len(times))
+            frac = (i - lo) / (hi - lo)
+            s = a + (b - a) * frac
+            times[i] = (s, s + max(0.15, (b - a) / (hi - lo)))
+    out = []
+    for li, ln in enumerate(lines):
+        ws = [(t, times[i]) for i, (l2, t) in enumerate(lyr) if l2 == li]
+        if ws:
+            out.append({"line": ln, "start": round(ws[0][1][0], 2), "end": round(ws[-1][1][1], 2),
+                        "words": [{"w": w, "s": round(s, 2), "e": round(e, 2)} for w, (s, e) in ws]})
+    return out
+
+
+# ---------------------------------------------------------------- captions + final video
+def ass_time(t):
+    t = max(0.0, t)
+    return f"{int(t // 3600)}:{int(t % 3600 // 60):02d}:{t % 60:05.2f}"
+
+
+def write_captions(timed, path, duration):
+    head = ("[Script Info]\nScriptType: v4.00+\nPlayResX: 1920\nPlayResY: 1080\nWrapStyle: 0\nScaledBorderAndShadow: yes\n\n"
+            "[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, "
+            "Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
+            f"Style: Lyric,{CAPTION_FONT},78,&H00FFFFFF,&H00FFFFFF,&H00602010,&H80000000,1,0,0,0,100,100,1,0,1,7,3,2,90,90,70,1\n\n"
+            "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n")
+    ev = []
+    for i, ln in enumerate(timed):
+        show_until = timed[i + 1]["start"] if i + 1 < len(timed) else min(duration, ln["end"] + 2.0)
+        show_until = max(show_until, ln["end"])
+        ws = ln["words"]
+        for k, w in enumerate(ws):   # the line stays up; the word being sung turns yellow
+            a = ln["start"] if k == 0 else w["s"]
+            b = ws[k + 1]["s"] if k + 1 < len(ws) else show_until
+            txt = " ".join(("{\\c&H00E6FF&}" + x["w"].upper() + "{\\c&HFFFFFF&}") if j == k else x["w"].upper()
+                           for j, x in enumerate(ws))
+            ev.append(f"Dialogue: 0,{ass_time(a)},{ass_time(b)},Lyric,,0,0,0,,{txt}")
+    open(path, "w", encoding="utf-8").write(head + "\n".join(ev) + "\n")
+
+
+def probe_duration(path):
+    r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path],
+                       capture_output=True, text=True)
+    return float(r.stdout.strip() or 0)
+
+
+def assemble(folder, song, scene_files, captions, out):
+    dur = probe_duration(song)
+    lst = os.path.join(folder, "scenes", "list.txt")
+    with open(lst, "w", encoding="utf-8") as f:
+        for s in scene_files:
+            f.write(f"file '{os.path.basename(s)}'\n")
+    ass = os.path.relpath(captions, folder).replace("\\", "/")
+    # crop the 3:2 clips to 16:9, enlarge to 1080p; hold the last frame if the clips end before the song
+    vf = (f"crop=iw:trunc(iw*9/32)*2,scale=1920:1080:flags=lanczos,fps=24,setsar=1,"
+          f"tpad=stop_mode=clone:stop_duration=30,ass=filename='{ass}'")
+    cmd = ["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", os.path.relpath(lst, folder),
+           "-i", os.path.relpath(song, folder), "-vf", vf, "-map", "0:v", "-map", "1:a", "-t", f"{dur:.2f}",
+           "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p",
+           "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", os.path.relpath(out, folder)]
+    subprocess.run(cmd, check=True, cwd=folder)
+
+
+# ---------------------------------------------------------------- the pipeline
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("topic", help='what the song is about, e.g. "ABC song with friendly animals"')
+    ap.add_argument("--minutes", type=float, default=2.5, help="song length, 2 to 4 (default 2.5)")
+    ap.add_argument("--no-wait", action="store_true", help="send the Kaggle job and stop (run again to continue)")
+    a = ap.parse_args()
+    seconds = int(min(240, max(120, a.minutes * 60)))   # ACE-Step sings up to 4 minutes in one go
+
+    slug = re.sub(r"[^\w\- ]", "", a.topic).strip()[:60]
+    existing = [d for d in os.listdir(os.path.join(HERE, "videos")) if d.endswith(f" - {slug}")] \
+        if os.path.isdir(os.path.join(HERE, "videos")) else []
+    folder = os.path.join(HERE, "videos", existing[0] if existing else f"{dt.date.today()} - {slug}")
+    os.makedirs(os.path.join(folder, "scenes"), exist_ok=True)
+    log(f"Video folder: {folder}")
+
+    # 1. lyrics
+    lyr_path = os.path.join(folder, "lyrics.json")
+    if not os.path.exists(lyr_path):
+        log("1/5 Gemini: writing the lyrics...")
+        lines_wanted = int(seconds / 3.2)
+        j = gemini_json(f"""You write original songs for a kids YouTube channel (ages 2-7). Topic: "{a.topic}".
+Write a NEW, original, catchy, educational song about {seconds // 60} min {seconds % 60} s long (about {lines_wanted} short sung lines),
+with simple words, strong rhymes and a chorus that repeats 3 times. Never copy existing songs or their lyrics.
+Return JSON:
+{{"title": "song title",
+  "lyrics": "the lyrics with section tags on their own lines: [verse], [chorus], [bridge], [outro]; one sung line per line",
+  "music_style": "comma-separated music tags for an AI music model, e.g. children's song, nursery rhyme, happy, upbeat, ukulele, glockenspiel, hand claps, cheerful female vocal, clear vocals, 110 bpm",
+  "visual_style": "one sentence describing ONE consistent look for every scene, e.g. bright colorful 3D cartoon animation, soft sunny lighting, rounded friendly shapes, Pixar-like",
+  "characters": "short fixed descriptions of the 1-3 recurring characters (species, colors, clothes) so they look the same in every scene"}}""")
+        j["lyrics_plain"] = "\n".join(lyric_lines(j["lyrics"]))
+        j["seconds"] = seconds
+        json.dump(j, open(lyr_path, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
+        log(f"  \"{j['title']}\" ({len(lyric_lines(j['lyrics']))} lines)")
+    L = json.load(open(lyr_path, encoding="utf-8"))
+
+    # 2. song
+    song = os.path.join(folder, "song.wav")
+    words_path = os.path.join(folder, "words.json")
+    if not (os.path.exists(song) and os.path.exists(words_path)):
+        log("2/5 Kaggle GPU: singing the song (ACE-Step) and timing the words (Whisper)...")
+        out = kaggle_run("kids-song", "song.py", {"seconds": L["seconds"], "style": L["music_style"],
+                                                  "lyrics": L["lyrics"], "lyrics_plain": L["lyrics_plain"],
+                                                  "seed": 42, "steps": 60}, folder, wait=not a.no_wait)
+        for f in ("song.wav", "words.json"):
+            shutil.copy(os.path.join(out, f), os.path.join(folder, f))
+        if os.path.exists(os.path.join(out, "info.json")):
+            shutil.copy(os.path.join(out, "info.json"), os.path.join(folder, "song_info.json"))
+    duration = probe_duration(song)
+    timed = time_lines(lyric_lines(L["lyrics"]), json.load(open(words_path, encoding="utf-8")), duration)
+    json.dump(timed, open(os.path.join(folder, "lyrics_timed.json"), "w", encoding="utf-8"), indent=1, ensure_ascii=False)
+    log(f"  song: {duration:.0f} s, {len(timed)} lyric lines timed")
+
+    # 3. scene script
+    sc_path = os.path.join(folder, "scenes.json")
+    if not os.path.exists(sc_path):
+        n = math.ceil(duration / SCENE_SECONDS)
+        log(f"3/5 Gemini: writing {n} scenes...")
+        slots = []
+        for k in range(n):
+            s, e = k * SCENE_SECONDS, (k + 1) * SCENE_SECONDS
+            sung = " / ".join(t["line"] for t in timed if t["start"] < e and t["end"] > s)
+            slots.append({"n": k + 1, "from": round(s, 1), "to": round(e, 1), "sung": sung or "(music only)"})
+        j = gemini_json(f"""You direct an animated music video for a kids song. Song: "{L['title']}".
+Look of every scene: {L['visual_style']}
+Recurring characters (always describe them exactly like this): {L['characters']}
+Here are {n} time slots of about 5 seconds and what is sung in each:
+{json.dumps(slots, ensure_ascii=False)}
+For EACH slot write one scene for an AI text-to-video model: a single continuous shot that shows what is being sung,
+with the characters described in full every time, the setting, the action and one simple camera move.
+3-4 sentences, concrete and visual, cheerful and safe for small children, no text or letters on screen
+(write e.g. "a big red apple" instead of "the letter A").
+Return JSON: {{"scenes": [{{"n": 1, "prompt": "..."}}, ...]}} with exactly {n} scenes in order.""")
+        scenes = j["scenes"][:n]
+        while len(scenes) < n:   # never leave a gap
+            scenes.append({"n": len(scenes) + 1, "prompt": scenes[-1]["prompt"]})
+        for k, s in enumerate(scenes):
+            s["n"] = k + 1
+        json.dump({"scenes": scenes}, open(sc_path, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
+    scenes = json.load(open(sc_path, encoding="utf-8"))["scenes"]
+
+    # 4. video scenes
+    scene_dir = os.path.join(folder, "scenes")
+    missing = [s for s in scenes if not os.path.exists(os.path.join(scene_dir, f"scene_{s['n']:03d}.mp4"))]
+    if missing:
+        log(f"4/5 Kaggle GPU: making {len(missing)} video scenes (LTX-Video)...")
+        job = dict(VIDEO, style=L["visual_style"], negative=NEGATIVE, seed=7,
+                   scenes=[{"n": s["n"], "prompt": s["prompt"]} for s in missing])
+        out = kaggle_run("kids-scenes", "scenes.py", job, folder, wait=not a.no_wait)
+        for f in os.listdir(os.path.join(out, "scenes")):
+            shutil.copy(os.path.join(out, "scenes", f), os.path.join(scene_dir, f))
+        if os.path.exists(os.path.join(out, "info.json")):
+            shutil.copy(os.path.join(out, "info.json"), os.path.join(folder, "scenes_info.json"))
+    files = [os.path.join(scene_dir, f"scene_{s['n']:03d}.mp4") for s in scenes]
+    files = [f for f in files if os.path.exists(f)]
+    if not files:
+        sys.exit("No scenes to put together.")
+
+    # 5. final video
+    final = os.path.join(folder, "final.mp4")
+    log("5/5 Putting the video together (scenes + song + lyric captions)...")
+    caps = os.path.join(folder, "captions.ass")
+    write_captions(timed, caps, duration)
+    assemble(folder, song, files, caps, final)
+    yt = os.path.join(folder, "youtube.txt")
+    if not os.path.exists(yt):
+        d = gemini_json(f"""Write YouTube metadata for a kids song video (ages 2-7), song title "{L['title']}", topic "{a.topic}".
+Lyrics: {L['lyrics_plain'][:1500]}
+Return JSON: {{"title": "max 90 chars, friendly, searchable", "description": "3-5 short lines about what kids learn, then the full lyrics",
+"tags": ["12-20 search tags"]}}""")
+        open(yt, "w", encoding="utf-8").write(
+            f"TITLE:\n{d['title']}\n\nDESCRIPTION:\n{d['description']}\n\nTAGS:\n{', '.join(d['tags'])}\n\n"
+            f"---\nAudience: Yes, it's made for kids. Length: {probe_duration(final):.0f} s.\n")
+    log(f"DONE: {final}")
+
+
+if __name__ == "__main__":
+    main()
