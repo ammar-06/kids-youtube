@@ -1,0 +1,16 @@
+# Secrets: never upload
+.env
+kaggle.json
+access_token
+
+# Generated media and job outputs (large)
+videos/
+out/
+*.mp4
+*.mp3
+*.wav
+*.flac
+*.png
+*.jpg
+*.log
+__pycache__/
