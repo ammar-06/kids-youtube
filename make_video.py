@@ -1,6 +1,6 @@
 """Make one kids song video, start to finish.
 
-    python make_video.py "ABC song with friendly animals" [--minutes 2.5] [--no-wait]
+    python make_video.py "ABC song with friendly animals" [--minutes 2.5] [--gpu kaggle|colab] [--no-wait]
 
 1. Gemini writes the lyrics, the music style and the look of the video     -> lyrics.json
 2. Kaggle GPU: ACE-Step sings the song, Whisper times every sung word      -> song.wav, words.json
@@ -124,6 +124,79 @@ def kaggle_run(slug, template, job, workdir, wait=True):
     return out
 
 
+# ---------------------------------------------------------------- Google Colab (backup for a busy Kaggle)
+DOWNLOADS = os.path.join(os.path.expanduser("~"), "Downloads")
+
+
+def colab_notebook(kind, template, job, token):
+    """A ready Colab notebook for one GPU job: saves its work to Google Drive (a disconnect loses nothing),
+    then downloads one results zip that make_video.py picks up from the Downloads folder."""
+    code = open(os.path.join(JOBS, template), encoding="utf-8").read().replace("__JOB__", json.dumps(job))
+    drive_dir = f"/content/drive/MyDrive/kids-youtube/{kind}_{token}"
+    zip_name = f"kids_{kind}_{token}"
+
+    def cell(src, kind_="code"):
+        c = {"cell_type": kind_, "metadata": {}, "source": src.splitlines(True)}
+        if kind_ == "code":
+            c.update(outputs=[], execution_count=None)
+        return c
+
+    steps = (f"# Kids video: {kind} ({token})\n\n"
+             "1. **Runtime → Change runtime type → T4 GPU → Save**\n"
+             "2. **Runtime → Run all**, and allow Google Drive when it asks (the work is saved there, so a disconnect loses nothing)\n"
+             f"3. When it finishes, your browser downloads **{zip_name}.zip**. Then run the same `make_video.py` command again on your PC.\n\n"
+             "If the session disconnects, just do step 2 again: it continues where it stopped.")
+    cells = [
+        cell(steps, "markdown"),
+        cell("import torch\nassert torch.cuda.is_available(), 'No GPU: Runtime -> Change runtime type -> T4 GPU, then Run all again'\n"
+             "print('GPU:', torch.cuda.get_device_name(0))\n"
+             "from google.colab import drive\ndrive.mount('/content/drive')\n"
+             f"import os\nOUT = {drive_dir!r}\nos.makedirs(OUT, exist_ok=True)\nos.environ['JOB_OUT'] = OUT\nprint('saving to', OUT)"),
+        cell("JOB_SCRIPT = " + repr(code) + "\nopen('/content/job.py', 'w').write(JOB_SCRIPT)\n"
+             "import subprocess, sys\n"
+             "r = subprocess.run([sys.executable, '/content/job.py'], env=os.environ.copy())\n"
+             "assert r.returncode == 0, 'The job failed: see the messages above'"),
+        cell(f"import shutil\nfrom google.colab import files\n"
+             f"z = shutil.make_archive('/content/{zip_name}', 'zip', OUT)\nprint('results:', z)\nfiles.download(z)"),
+    ]
+    return {"cells": cells, "metadata": {"accelerator": "GPU", "colab": {"provenance": [], "gpuType": "T4"},
+            "kernelspec": {"name": "python3", "display_name": "Python 3"}}, "nbformat": 4, "nbformat_minor": 0}
+
+
+def colab_run(kind, template, job, workdir):
+    """Use the results zip if it is in Downloads; otherwise write the notebook, explain, and stop."""
+    import hashlib
+    import zipfile
+    token = hashlib.sha1(json.dumps(job, sort_keys=True).encode()).hexdigest()[:8]
+    zips = [f for f in os.listdir(DOWNLOADS) if f.startswith(f"kids_{kind}_{token}") and f.endswith(".zip")] \
+        if os.path.isdir(DOWNLOADS) else []
+    out = os.path.join(workdir, "jobs", f"colab-{kind}", "out")
+    if zips:
+        shutil.rmtree(out, ignore_errors=True)
+        os.makedirs(out)
+        newest = max((os.path.join(DOWNLOADS, f) for f in zips), key=os.path.getmtime)
+        zipfile.ZipFile(newest).extractall(out)
+        log(f"  took the Colab results from {newest}")
+        return out
+    nb = os.path.join(workdir, "colab", f"{kind}.ipynb")
+    os.makedirs(os.path.dirname(nb), exist_ok=True)
+    json.dump(colab_notebook(kind, template, job, token), open(nb, "w", encoding="utf-8"), indent=1)
+    sys.exit(f"""
+  This step runs on Google Colab's free GPU:
+    1. Open https://colab.research.google.com  ->  File  ->  Upload notebook  ->  choose:
+         {nb}
+    2. Runtime -> Change runtime type -> T4 GPU -> Save
+    3. Runtime -> Run all   (allow Google Drive when asked)
+    4. When it finishes, your browser downloads kids_{kind}_{token}.zip into Downloads.
+    5. Run the same make_video.py command again: it picks the file up and continues.""")
+
+
+def gpu_run(kind, slug, template, job, workdir, a):
+    if a.gpu == "colab":
+        return colab_run(kind, template, job, workdir)
+    return kaggle_run(slug, template, job, workdir, wait=not a.no_wait)
+
+
 # ---------------------------------------------------------------- lyrics timing
 def tokens(text):
     return re.findall(r"[a-z0-9']+", text.lower())
@@ -224,6 +297,8 @@ def main():
     ap.add_argument("topic", help='what the song is about, e.g. "ABC song with friendly animals"')
     ap.add_argument("--minutes", type=float, default=2.5, help="song length, 2 to 4 (default 2.5)")
     ap.add_argument("--no-wait", action="store_true", help="send the Kaggle job and stop (run again to continue)")
+    ap.add_argument("--gpu", choices=["kaggle", "colab"], default="kaggle",
+                    help="where the GPU steps run: kaggle (automatic) or colab (you upload a ready notebook)")
     a = ap.parse_args()
     seconds = int(min(240, max(120, a.minutes * 60)))   # ACE-Step sings up to 4 minutes in one go
 
@@ -258,10 +333,10 @@ Return JSON:
     song = os.path.join(folder, "song.wav")
     words_path = os.path.join(folder, "words.json")
     if not (os.path.exists(song) and os.path.exists(words_path)):
-        log("2/5 Kaggle GPU: singing the song (ACE-Step) and timing the words (Whisper)...")
-        out = kaggle_run("kids-song", "song.py", {"seconds": L["seconds"], "style": L["music_style"],
-                                                  "lyrics": L["lyrics"], "lyrics_plain": L["lyrics_plain"],
-                                                  "seed": 42, "steps": 60}, folder, wait=not a.no_wait)
+        log(f"2/5 {a.gpu.capitalize()} GPU: singing the song (ACE-Step) and timing the words (Whisper)...")
+        out = gpu_run("song", "kids-song", "song.py", {"seconds": L["seconds"], "style": L["music_style"],
+                                                       "lyrics": L["lyrics"], "lyrics_plain": L["lyrics_plain"],
+                                                       "seed": 42, "steps": 60}, folder, a)
         for f in ("song.wav", "words.json"):
             shutil.copy(os.path.join(out, f), os.path.join(folder, f))
         if os.path.exists(os.path.join(out, "info.json")):
@@ -303,10 +378,10 @@ Return JSON: {{"scenes": [{{"n": 1, "prompt": "..."}}, ...]}} with exactly {n} s
     scene_dir = os.path.join(folder, "scenes")
     missing = [s for s in scenes if not os.path.exists(os.path.join(scene_dir, f"scene_{s['n']:03d}.mp4"))]
     if missing:
-        log(f"4/5 Kaggle GPU: making {len(missing)} video scenes (LTX-Video)...")
+        log(f"4/5 {a.gpu.capitalize()} GPU: making {len(missing)} video scenes (LTX-Video)...")
         job = dict(VIDEO, style=L["visual_style"], negative=NEGATIVE, seed=7,
                    scenes=[{"n": s["n"], "prompt": s["prompt"]} for s in missing])
-        out = kaggle_run("kids-scenes", "scenes.py", job, folder, wait=not a.no_wait)
+        out = gpu_run("scenes", "kids-scenes", "scenes.py", job, folder, a)
         for f in os.listdir(os.path.join(out, "scenes")):
             shutil.copy(os.path.join(out, "scenes", f), os.path.join(scene_dir, f))
         if os.path.exists(os.path.join(out, "info.json")):

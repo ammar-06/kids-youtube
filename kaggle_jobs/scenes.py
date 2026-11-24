@@ -8,7 +8,7 @@ import sys
 import time
 
 JOB = json.loads(r'''__JOB__''')
-OUT = "/kaggle/working"
+OUT = os.environ.get("JOB_OUT", "/kaggle/working")   # Kaggle; Colab sets JOB_OUT (a Google Drive folder)
 os.makedirs(os.path.join(OUT, "scenes"), exist_ok=True)
 t0 = time.time()
 
@@ -25,10 +25,11 @@ import json, os, sys, time, torch
 from diffusers import LTXPipeline
 from diffusers.utils import export_to_video
 
-job = json.loads(open("/kaggle/working/job.json").read())
+OUT = os.environ.get("JOB_OUT", "/kaggle/working")
+job = json.loads(open(os.path.join(OUT, "job.json")).read())
 gpu, ngpu = int(sys.argv[1]), int(sys.argv[2])
 scenes = [s for i, s in enumerate(job["scenes"]) if i % ngpu == gpu]
-out = "/kaggle/working/scenes"
+out = os.path.join(OUT, "scenes")
 dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
 pipe = LTXPipeline.from_pretrained(job.get("model", "Lightricks/LTX-Video"), torch_dtype=dtype)
 pipe.enable_model_cpu_offload()   # the T5 text encoder alone is ~9 GB: keep only the active part on the GPU
@@ -49,7 +50,7 @@ for s in scenes:
     export_to_video(frames, path, fps=job["fps"])
     times.append(round(time.time() - t, 1))
     print(f"GPU {gpu}: scene {s['n']} done in {times[-1]} s", flush=True)
-json.dump({"gpu": gpu, "dtype": str(dtype), "seconds_per_scene": times}, open(f"/kaggle/working/speed_gpu{gpu}.json", "w"))
+json.dump({"gpu": gpu, "dtype": str(dtype), "seconds_per_scene": times}, open(os.path.join(OUT, f"speed_gpu{gpu}.json"), "w"))
 '''
 
 open(os.path.join(OUT, "job.json"), "w").write(json.dumps(JOB))

@@ -11,7 +11,7 @@ import sys
 import time
 
 JOB = json.loads(r'''__JOB__''')
-OUT = "/kaggle/working"
+OUT = os.environ.get("JOB_OUT", "/kaggle/working")   # Kaggle; Colab sets JOB_OUT (a Google Drive folder)
 info = {"job": JOB}
 t0 = time.time()
 
