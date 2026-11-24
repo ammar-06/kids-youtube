@@ -150,8 +150,16 @@ def colab_notebook(kind, template, job, token):
         cell(steps, "markdown"),
         cell("import torch\nassert torch.cuda.is_available(), 'No GPU: Runtime -> Change runtime type -> T4 GPU, then Run all again'\n"
              "print('GPU:', torch.cuda.get_device_name(0))\n"
-             "from google.colab import drive\ndrive.mount('/content/drive')\n"
-             f"import os\nOUT = {drive_dir!r}\nos.makedirs(OUT, exist_ok=True)\nos.environ['JOB_OUT'] = OUT\nprint('saving to', OUT)"),
+             "import os\n"
+             "# Google Drive keeps the work if Colab disconnects; without it (popup closed or blocked) it still runs\n"
+             f"OUT = {drive_dir!r}\n"
+             "try:\n"
+             "    from google.colab import drive\n"
+             "    drive.mount('/content/drive')\n"
+             "except Exception as e:\n"
+             f"    OUT = '/content/{kind}_{token}'\n"
+             "    print('Google Drive not connected (' + str(e) + '): working without it. If Colab disconnects, start again.')\n"
+             "os.makedirs(OUT, exist_ok=True)\nos.environ['JOB_OUT'] = OUT\nprint('saving to', OUT)"),
         cell("JOB_SCRIPT = " + repr(code) + "\nopen('/content/job.py', 'w').write(JOB_SCRIPT)\n"
              "import subprocess, sys\n"
              "r = subprocess.run([sys.executable, '/content/job.py'], env=os.environ.copy())\n"
