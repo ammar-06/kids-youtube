@@ -162,8 +162,20 @@ def colab_notebook(kind, template, job, token):
              "os.makedirs(OUT, exist_ok=True)\nos.environ['JOB_OUT'] = OUT\nprint('saving to', OUT)"),
         cell("JOB_SCRIPT = " + repr(code) + "\nopen('/content/job.py', 'w').write(JOB_SCRIPT)\n"
              "import subprocess, sys\n"
-             "r = subprocess.run([sys.executable, '/content/job.py'], env=os.environ.copy())\n"
-             "assert r.returncode == 0, 'The job failed: see the messages above'"),
+             "# show the job's messages here and keep them in log.txt (next to the results)\n"
+             "logf = open(os.path.join(OUT, 'log.txt'), 'a')\n"
+             "p = subprocess.Popen([sys.executable, '-u', '/content/job.py'], env=os.environ.copy(),\n"
+             "                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)\n"
+             "tail = []\n"
+             "for line in p.stdout:\n"
+             "    print(line, end='', flush=True); logf.write(line); logf.flush()\n"
+             "    tail = (tail + [line])[-40:]\n"
+             "p.wait(); logf.close()\n"
+             "if p.returncode != 0:\n"
+             "    print('\\n===== LAST LINES (screenshot these) =====\\n' + ''.join(tail))\n"
+             "    if p.returncode in (-9, 137):\n"
+             "        print('Killed: out of memory (RAM).')\n"
+             "    raise SystemExit(f'The job failed (exit code {p.returncode})')"),
         cell(f"import shutil\nfrom google.colab import files\n"
              f"z = shutil.make_archive('/content/{zip_name}', 'zip', OUT)\nprint('results:', z)\nfiles.download(z)"),
     ]
