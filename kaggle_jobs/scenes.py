@@ -31,7 +31,9 @@ job = json.loads(open(os.path.join(OUT, "job.json")).read())
 gpu, ngpu = int(sys.argv[1]), int(sys.argv[2])
 scenes = [s for i, s in enumerate(job["scenes"]) if i % ngpu == gpu]
 out = os.path.join(OUT, "scenes")
-dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+# bf16 only on GPUs that run it natively (compute 8.0+); a T4 (7.5) "supports" it by emulation, but its conv
+# kernels fail ("GET was unable to find an engine"), so it gets float16
+dtype = torch.bfloat16 if torch.cuda.get_device_capability(0)[0] >= 8 else torch.float16
 pipe = LTXPipeline.from_pretrained(job.get("model", "Lightricks/LTX-Video"), torch_dtype=dtype)
 pipe.enable_model_cpu_offload()   # the T5 text encoder alone is ~9 GB: keep only the active part on the GPU
 pipe.vae.enable_tiling()
