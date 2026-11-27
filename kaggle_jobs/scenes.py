@@ -25,7 +25,9 @@ WORKER = r'''
 import gc, json, os, sys, time, torch
 from diffusers import LTXPipeline
 from diffusers.utils import export_to_video
-from transformers import AutoTokenizer, T5EncoderModel, T5Tokenizer
+import sentencepiece as spm
+from huggingface_hub import hf_hub_download
+from transformers import T5EncoderModel
 
 OUT = os.environ.get("JOB_OUT", "/kaggle/working")
 job = json.loads(open(os.path.join(OUT, "job.json")).read())
@@ -42,21 +44,19 @@ dtype = torch.bfloat16 if torch.cuda.get_device_capability(0)[0] >= 8 else torch
 # little to hold T5 and the video model in RAM together). bf16 matmuls work on any recent GPU, and T5 overflows in
 # float16. All prompts are turned into embeddings, then T5 is freed.
 t = time.time()
-try:   # the classic SentencePiece tokenizer: newer transformers misreads spiece.model as a tiktoken file
-    tok = T5Tokenizer.from_pretrained(model, subfolder="tokenizer")
-except Exception as e:  # noqa: BLE001
-    print("T5Tokenizer failed, trying AutoTokenizer:", e, flush=True)
-    tok = AutoTokenizer.from_pretrained(model, subfolder="tokenizer")
+# T5's tokenizer is SentencePiece; read spiece.model directly (Colab's transformers misreads it as a tiktoken file)
+sp = spm.SentencePieceProcessor(model_file=hf_hub_download(model, "tokenizer/spiece.model"))
 te = T5EncoderModel.from_pretrained(model, subfolder="text_encoder", torch_dtype=torch.bfloat16,
                                     device_map={"": 0}, low_cpu_mem_usage=True).eval()
 
 
-def encode(text):   # same as LTXPipeline._get_t5_prompt_embeds (max 128 tokens, no mask into T5)
-    ids = tok(text, padding="max_length", max_length=128, truncation=True, add_special_tokens=True,
-              return_tensors="pt")
+def encode(text, n=128):   # as T5Tokenizer + LTXPipeline._get_t5_prompt_embeds: pieces + </s> (1), pad 0, 128 max
+    ids = sp.encode(text)[:n - 1] + [1]
+    mask = [1] * len(ids) + [0] * (n - len(ids))
+    ids = torch.tensor([ids + [0] * (n - len(ids))])
     with torch.no_grad():
-        emb = te(ids.input_ids.to("cuda"))[0]
-    return emb.to(dtype).cpu(), ids.attention_mask.bool().cpu()
+        emb = te(ids.to("cuda"))[0]
+    return emb.to(dtype).cpu(), torch.tensor([mask]).bool()
 
 
 neg = encode(job["negative"])
