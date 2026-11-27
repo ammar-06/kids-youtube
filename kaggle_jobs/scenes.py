@@ -25,7 +25,7 @@ WORKER = r'''
 import gc, json, os, sys, time, torch
 from diffusers import LTXPipeline
 from diffusers.utils import export_to_video
-from transformers import T5EncoderModel, T5TokenizerFast
+from transformers import AutoTokenizer, T5EncoderModel, T5Tokenizer
 
 OUT = os.environ.get("JOB_OUT", "/kaggle/working")
 job = json.loads(open(os.path.join(OUT, "job.json")).read())
@@ -42,7 +42,11 @@ dtype = torch.bfloat16 if torch.cuda.get_device_capability(0)[0] >= 8 else torch
 # little to hold T5 and the video model in RAM together). bf16 matmuls work on any recent GPU, and T5 overflows in
 # float16. All prompts are turned into embeddings, then T5 is freed.
 t = time.time()
-tok = T5TokenizerFast.from_pretrained(model, subfolder="tokenizer")
+try:   # the classic SentencePiece tokenizer: newer transformers misreads spiece.model as a tiktoken file
+    tok = T5Tokenizer.from_pretrained(model, subfolder="tokenizer")
+except Exception as e:  # noqa: BLE001
+    print("T5Tokenizer failed, trying AutoTokenizer:", e, flush=True)
+    tok = AutoTokenizer.from_pretrained(model, subfolder="tokenizer")
 te = T5EncoderModel.from_pretrained(model, subfolder="text_encoder", torch_dtype=torch.bfloat16,
                                     device_map={"": 0}, low_cpu_mem_usage=True).eval()
 
