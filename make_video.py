@@ -238,6 +238,10 @@ def colab_auto_once(kind, code, workdir, out, name):
         raise RuntimeError("Colab gave no T4 GPU for an hour")
     try:
         colab_cli("upload", "-s", name, to_work(job_py), "/content/job.py")
+        if kind == "song" and os.path.exists(os.path.join(out, "song.wav")):
+            colab_cli("exec", "-s", name, stdin='import os; os.makedirs("/content/out", exist_ok=True)')
+            colab_cli("upload", "-s", name, to_work(os.path.join(out, "song.wav")), "/content/out/song.wav")
+            log("  reusing the song made earlier: only the word timing runs")
         colab_cli("exec", "-s", name, stdin=START)
         log(f"  Colab T4 running the {kind} job (log: {os.path.join(jobs, 'colab.log')})")
         off, got, rc = 0, set(), ""
@@ -277,8 +281,10 @@ def colab_auto_run(kind, template, job, workdir, attempts=3):
     clips still missing are made again."""
     src = open(os.path.join(JOBS, template), encoding="utf-8").read()
     out = os.path.join(workdir, "jobs", f"colab-{kind}", "out")
-    shutil.rmtree(out, ignore_errors=True)
-    os.makedirs(out)
+    keep = os.path.join(out, "song.wav")
+    if not (kind == "song" and os.path.exists(keep)):   # a song made by an earlier run is kept and reused
+        shutil.rmtree(out, ignore_errors=True)
+    os.makedirs(out, exist_ok=True)
     os.makedirs(os.path.join(workdir, "scenes"), exist_ok=True)
     for attempt in range(1, attempts + 1):
         todo = job
