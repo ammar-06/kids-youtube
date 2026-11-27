@@ -141,15 +141,32 @@ else:
 
 # Word timings of the singing (Whisper large-v3 on the GPU)
 t2 = time.time()
-from faster_whisper import WhisperModel  # noqa: E402
-
-model = WhisperModel("large-v3", device="cuda", compute_type="float16")
 # read the audio ourselves: faster-whisper's own reader (PyAV) breaks when Colab's av version differs
 _wav, _sr = soundfile.read(song, dtype="float32", always_2d=True)
 _audio = torchaudio.functional.resample(torch.from_numpy(_wav.mean(axis=1)), _sr, 16000).numpy()
-segments, _ = model.transcribe(_audio, word_timestamps=True, language="en", vad_filter=False,
-                               initial_prompt=" ".join(JOB["lyrics_plain"].split())[:800])
-words = [{"w": w.word.strip(), "s": round(w.start, 2), "e": round(w.end, 2)} for s in segments for w in (s.words or [])]
+_prompt = " ".join(JOB["lyrics_plain"].split())[:800]
+try:
+    from faster_whisper import WhisperModel  # noqa: E402
+    model = WhisperModel("large-v3", device="cuda", compute_type="float16")
+    segments, _ = model.transcribe(_audio, word_timestamps=True, language="en", vad_filter=False,
+                                   initial_prompt=_prompt)
+    words = [{"w": w.word.strip(), "s": round(w.start, 2), "e": round(w.end, 2)}
+             for s in segments for w in (s.words or [])]
+    info["whisper"] = "faster-whisper"
+except Exception as e:  # noqa: BLE001  e.g. "libcublas.so.12 not found" when the GPU stack is CUDA 13
+    # OpenAI's own Whisper runs on PyTorch, so it works with whatever CUDA PyTorch was built for
+    print(f"faster-whisper unavailable ({e}); using openai-whisper", flush=True)
+    del_model = globals().pop("model", None)
+    torch.cuda.empty_cache()
+    if not os.environ.get("JOB_PREINSTALLED"):
+        sh("pip install -q openai-whisper")
+    import whisper  # noqa: E402
+    model = whisper.load_model("large-v3", device="cuda")
+    res = model.transcribe(_audio, language="en", word_timestamps=True, initial_prompt=_prompt,
+                           fp16=True, condition_on_previous_text=False)
+    words = [{"w": w["word"].strip(), "s": round(w["start"], 2), "e": round(w["end"], 2)}
+             for s in res["segments"] for w in s.get("words", [])]
+    info["whisper"] = "openai-whisper"
 json.dump(words, open(os.path.join(OUT, "words.json"), "w"), indent=1)
 info["whisper_s"] = round(time.time() - t2)
 info["words"] = len(words)

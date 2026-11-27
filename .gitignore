@@ -19,3 +19,5 @@ docker/colab/code.txt
 docker/colab/auth.log
 docker/colab/hello.txt
 *.log
+keep_awake.ps1
+stop_awake.flag
