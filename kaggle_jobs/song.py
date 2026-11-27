@@ -53,6 +53,22 @@ def _save(path, src, sample_rate, *a, **k):  # newer torchaudio needs torchcodec
 
 torchaudio.save = _save
 from acestep.pipeline_ace_step import ACEStepPipeline  # noqa: E402
+from acestep.music_dcae.music_dcae_pipeline import MusicDCAE  # noqa: E402
+
+
+def _decode_fp32(fn):
+    """T4 (compute 7.5) has no bfloat16 convolution engine: the song model runs in bf16 fine, but the audio
+    decoder's conv2d fails ("GET was unable to find an engine"). Decode in float32 there."""
+    def wrapped(self, latents, *a, **k):
+        if torch.cuda.get_device_capability(0)[0] < 8:
+            self.to(torch.float32)
+            latents = latents.float()
+        return fn(self, latents, *a, **k)
+    return wrapped
+
+
+MusicDCAE.decode = _decode_fp32(MusicDCAE.decode)
+MusicDCAE.decode_overlap = _decode_fp32(MusicDCAE.decode_overlap)
 
 # T4 has no native bfloat16: try it (PyTorch emulates it), else float32 with CPU offload to fit 16 GB.
 t1 = time.time()
