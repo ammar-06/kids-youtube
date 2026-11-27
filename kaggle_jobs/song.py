@@ -34,11 +34,23 @@ for req in open("/tmp/ace-step/requirements.txt").read().split():
             print(f"WARNING: {name} did not install", flush=True)
 sh("pip install -q --no-deps /tmp/ace-step")
 sh("pip install -q faster-whisper")
+# transformers==4.50 (ACE-Step's pin) pulls huggingface_hub back to 0.x; the newest diffusers needs hub 1.x
+# (ImportError: resolve_revision). diffusers 0.33.1 is ACE-Step's own era and works with hub 0.x.
+sh("pip install -q diffusers==0.33.1")
 info["install_s"] = round(time.time() - t0)
 
 import torch  # noqa: E402
+import torchaudio  # noqa: E402
+import soundfile  # noqa: E402
 
 print("GPU:", torch.cuda.get_device_name(0), flush=True)
+
+
+def _save(path, src, sample_rate, *a, **k):  # newer torchaudio needs torchcodec to save; soundfile does not
+    soundfile.write(str(path), src.detach().float().cpu().numpy().T, int(sample_rate))
+
+
+torchaudio.save = _save
 from acestep.pipeline_ace_step import ACEStepPipeline  # noqa: E402
 
 # T4 has no native bfloat16: try it (PyTorch emulates it), else float32 with CPU offload to fit 16 GB.
