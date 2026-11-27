@@ -15,3 +15,7 @@ out/
 *.log
 __pycache__/
 modal_budget.json
+docker/colab/code.txt
+docker/colab/auth.log
+docker/colab/hello.txt
+*.log

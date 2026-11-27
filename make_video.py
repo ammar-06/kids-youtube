@@ -1,6 +1,6 @@
 """Make one kids song video, start to finish.
 
-    python make_video.py "ABC song with friendly animals" [--minutes 2.5] [--gpu modal|kaggle|colab] [--no-wait]
+    python make_video.py "ABC song with friendly animals" [--minutes 2.5] [--gpu colab|modal|kaggle|colab-notebook] [--no-wait]
 
 1. Gemini writes the lyrics, the music style and the look of the video     -> lyrics.json
 2. Kaggle GPU: ACE-Step sings the song, Whisper times every sung word      -> song.wav, words.json
@@ -183,6 +183,124 @@ def colab_notebook(kind, template, job, token):
             "kernelspec": {"name": "python3", "display_name": "Python 3"}}, "nbformat": 4, "nbformat_minor": 0}
 
 
+# ---------------------------------------------------------------- Colab, automatic (official Colab CLI in Docker)
+# docker/colab/Dockerfile holds Google's colab-cli (Linux only); the Google sign-in lives in the
+# "kids-colab-home" Docker volume, so it is asked once. One-time: docker build -t kids-colab docker/colab
+COLAB_POLL_S = 60
+COLAB_NEW_TRIES = 12            # no free T4 right now: try again every 5 minutes, up to an hour
+
+
+def colab_cli(*args, stdin=None, check=True):
+    cmd = ["docker", "run", "-i", "--rm", "-v", "kids-colab-home:/root", "-v", f"{HERE}:/work", "kids-colab", *args]
+    r = subprocess.run(cmd, input=stdin, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if check and r.returncode:
+        raise RuntimeError(f"colab {args[0]} failed: {(r.stdout + r.stderr).strip()[-800:]}")
+    return r
+
+
+def to_work(path):   # a path under this folder as the container sees it
+    return "/work/" + os.path.relpath(path, HERE).replace(os.sep, "/")
+
+
+START = r'''
+import os, subprocess
+os.makedirs("/content/out", exist_ok=True)
+for f in ("/content/job.log", "/content/job.rc"):
+    if os.path.exists(f): os.remove(f)
+subprocess.Popen("python -u /content/job.py > /content/job.log 2>&1; echo $? > /content/job.rc", shell=True,
+                 env=dict(os.environ, JOB_OUT="/content/out"), start_new_session=True)
+print("started")
+'''
+POLL = r'''
+import os
+log = open("/content/job.log", errors="replace").read() if os.path.exists("/content/job.log") else ""
+print(log[{off}:][-20000:], end="")
+print("\n@@LEN", len(log))
+print("@@RC", open("/content/job.rc").read().strip() if os.path.exists("/content/job.rc") else "")
+print("@@FILES", " ".join(sorted(os.path.relpath(os.path.join(d, f), "/content/out") for d, _, fs in os.walk("/content/out") for f in fs)))
+'''
+
+
+def colab_auto_once(kind, code, workdir, out, name):
+    """One Colab session: run the job, stream its log, download its files as they appear. Returns the exit code."""
+    jobs = os.path.join(workdir, "jobs", f"colab-{kind}")
+    os.makedirs(jobs, exist_ok=True)
+    job_py = os.path.join(jobs, "job.py")
+    open(job_py, "w", encoding="utf-8").write(code)
+    logf = open(os.path.join(jobs, "colab.log"), "a", encoding="utf-8")
+    for i in range(COLAB_NEW_TRIES):
+        r = colab_cli("new", "-s", name, "--gpu", "T4", check=False)
+        if r.returncode == 0:
+            break
+        log(f"  Colab has no free T4 right now ({(r.stdout + r.stderr).strip()[-160:]}); trying again in 5 min")
+        time.sleep(300)
+    else:
+        raise RuntimeError("Colab gave no T4 GPU for an hour")
+    try:
+        colab_cli("upload", "-s", name, to_work(job_py), "/content/job.py")
+        colab_cli("exec", "-s", name, stdin=START)
+        log(f"  Colab T4 running the {kind} job (log: {os.path.join(jobs, 'colab.log')})")
+        off, got, rc = 0, set(), ""
+        while True:
+            time.sleep(COLAB_POLL_S)
+            r = colab_cli("exec", "-s", name, stdin=POLL.replace("{off}", str(off)))
+            text = r.stdout
+            body, _, tail = text.rpartition("\n@@LEN ")
+            if not tail:
+                raise RuntimeError(f"unexpected Colab reply: {text[-300:]}")
+            new = body
+            if new.strip():
+                print(new, end="" if new.endswith("\n") else "\n", flush=True)
+                logf.write(new)
+                logf.flush()
+            m = re.search(r"^(\d+)", tail)
+            off = int(m.group(1)) if m else off
+            rc = (re.search(r"@@RC (.*)", tail) or [None, ""])[1].strip()
+            files = (re.search(r"@@FILES (.*)", tail) or [None, ""])[1].split()
+            for rel in files:   # download each finished file once (scenes come one by one)
+                if rel in got or (not rc and not rel.startswith("scenes/")):
+                    continue
+                dest = os.path.join(out, rel)
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                colab_cli("download", "-s", name, f"/content/out/{rel}", to_work(dest))
+                got.add(rel)
+                if rel.startswith("scenes/"):   # straight into the video folder too: a rerun never redoes it
+                    shutil.copy(dest, os.path.join(workdir, rel))
+            if rc:
+                return int(rc) if rc.lstrip("-").isdigit() else 1
+    finally:
+        colab_cli("stop", "-s", name, check=False)   # always give the GPU back
+
+
+def colab_auto_run(kind, template, job, workdir, attempts=3):
+    """Run a GPU job on a free Colab T4 with no clicks. A lost session is retried; for scenes only the
+    clips still missing are made again."""
+    src = open(os.path.join(JOBS, template), encoding="utf-8").read()
+    out = os.path.join(workdir, "jobs", f"colab-{kind}", "out")
+    shutil.rmtree(out, ignore_errors=True)
+    os.makedirs(out)
+    os.makedirs(os.path.join(workdir, "scenes"), exist_ok=True)
+    for attempt in range(1, attempts + 1):
+        todo = job
+        if kind == "scenes":
+            left = [s for s in job["scenes"]
+                    if not os.path.exists(os.path.join(workdir, "scenes", f"scene_{s['n']:03d}.mp4"))]
+            if not left:
+                return out
+            todo = {**job, "scenes": left}
+        try:
+            rc = colab_auto_once(kind, src.replace("__JOB__", json.dumps(todo)), workdir, out, f"kids-{kind}")
+        except RuntimeError as e:
+            log(f"  Colab session problem: {e}")
+            rc = None
+        if rc == 0:
+            return out
+        if rc is not None and kind == "song":
+            sys.exit(f"Colab {kind} job failed (exit code {rc}); its messages are printed above")
+        log(f"  attempt {attempt} of {attempts} did not finish; starting a new session")
+    sys.exit(f"Colab {kind} job did not finish after {attempts} sessions")
+
+
 def colab_run(kind, template, job, workdir):
     """Use the results zip if it is in Downloads; otherwise write the notebook, explain, and stop."""
     import hashlib
@@ -291,6 +409,8 @@ def modal_run(kind, template, job, workdir):
 
 def gpu_run(kind, slug, template, job, workdir, a):
     if a.gpu == "colab":
+        return colab_auto_run(kind, template, job, workdir)
+    if a.gpu == "colab-notebook":
         return colab_run(kind, template, job, workdir)
     if a.gpu == "modal":
         return modal_run(kind, template, job, workdir)
@@ -397,9 +517,10 @@ def main():
     ap.add_argument("topic", help='what the song is about, e.g. "ABC song with friendly animals"')
     ap.add_argument("--minutes", type=float, default=2.5, help="song length, 2 to 4 (default 2.5)")
     ap.add_argument("--no-wait", action="store_true", help="send the Kaggle job and stop (run again to continue)")
-    ap.add_argument("--gpu", choices=["modal", "kaggle", "colab"], default="modal",
-                    help="where the GPU steps run: modal (automatic, free monthly credit), kaggle (automatic, "
-                         "free but often queued) or colab (you upload a ready notebook)")
+    ap.add_argument("--gpu", choices=["colab", "modal", "kaggle", "colab-notebook"], default="colab",
+                    help="where the GPU steps run: colab (automatic, free T4 through the Colab CLI in Docker), "
+                         "modal (automatic, needs a card on Modal), kaggle (automatic, free but often queued) or "
+                         "colab-notebook (you upload a ready notebook)")
     a = ap.parse_args()
     seconds = int(min(240, max(120, a.minutes * 60)))   # ACE-Step sings up to 4 minutes in one go
 
