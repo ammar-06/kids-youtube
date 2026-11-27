@@ -21,7 +21,19 @@ def sh(cmd):
     subprocess.run(cmd, shell=True, check=True)
 
 
-sh("pip install -q git+https://github.com/ace-step/ACE-Step.git faster-whisper")
+# ACE-Step pins exact old versions (e.g. spacy==3.8.4) that do not install on Python 3.13 (Colab and Kaggle now).
+# So: each requirement at its pinned version if that installs, else the newest; then ACE-Step itself without pins.
+sh("rm -rf /tmp/ace-step && git clone -q --depth 1 https://github.com/ace-step/ACE-Step /tmp/ace-step")
+for req in open("/tmp/ace-step/requirements.txt").read().split():
+    name = req.split("==")[0].split(">=")[0]
+    if name in ("torch", "torchaudio", "torchvision"):
+        continue   # keep the GPU builds that are already installed
+    if subprocess.run(f"pip install -q '{req}'", shell=True).returncode and req != name:
+        print(f"{req} does not install here: using the newest {name}", flush=True)
+        if subprocess.run(f"pip install -q '{name}'", shell=True).returncode:
+            print(f"WARNING: {name} did not install", flush=True)
+sh("pip install -q --no-deps /tmp/ace-step")
+sh("pip install -q faster-whisper")
 info["install_s"] = round(time.time() - t0)
 
 import torch  # noqa: E402
