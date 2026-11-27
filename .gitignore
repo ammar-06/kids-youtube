@@ -14,3 +14,4 @@ out/
 *.jpg
 *.log
 __pycache__/
+modal_budget.json

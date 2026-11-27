@@ -1,6 +1,6 @@
 """Make one kids song video, start to finish.
 
-    python make_video.py "ABC song with friendly animals" [--minutes 2.5] [--gpu kaggle|colab] [--no-wait]
+    python make_video.py "ABC song with friendly animals" [--minutes 2.5] [--gpu modal|kaggle|colab] [--no-wait]
 
 1. Gemini writes the lyrics, the music style and the look of the video     -> lyrics.json
 2. Kaggle GPU: ACE-Step sings the song, Whisper times every sung word      -> song.wav, words.json
@@ -211,9 +211,89 @@ def colab_run(kind, template, job, workdir):
     5. Run the same make_video.py command again: it picks the file up and continues.""")
 
 
+# Modal budget guard: the account must never be charged. Modal gives $30 of free credit a month; GPU work
+# here may use at most MODAL_GPU_BUDGET of it in any 31 days, which leaves room for model storage
+# (~$0.09/GB/month) and a margin. Every GPU second is counted at a padded rate (L4 $0.80/h + CPU + RAM).
+MODAL_GPU_BUDGET = 22.0          # dollars per 31 days, of the $30 free credit
+MODAL_RATE_PER_HOUR = 1.25       # padded cost of one L4 container hour
+MODAL_STARTUP_S = 180            # padded cold start per container (image pull, model load before the job)
+MODAL_LEDGER = os.path.join(HERE, "modal_budget.json")
+
+
+def modal_spent():
+    """Estimated dollars of Modal GPU use in the last 31 days, from the local ledger."""
+    runs = json.load(open(MODAL_LEDGER)) if os.path.exists(MODAL_LEDGER) else []
+    cutoff = time.time() - 31 * 86400
+    return sum(r["dollars"] for r in runs if r["t"] > cutoff), runs
+
+
+def modal_record(kind, dollars, note):
+    _, runs = modal_spent()
+    runs.append({"t": time.time(), "date": time.strftime("%Y-%m-%d %H:%M"), "kind": kind,
+                 "dollars": round(dollars, 3), "note": note})
+    json.dump(runs, open(MODAL_LEDGER, "w"), indent=1)
+
+
+def modal_run(kind, template, job, workdir):
+    """Run a GPU job on Modal (modal_gpu.py) and write its files to <workdir>/jobs/modal-<kind>/out.
+    The scenes are split over up to SCENES_MAX_GPUS GPUs at once. Refuses to start if the job's worst case
+    (every container running to its timeout) could take Modal use past the budget."""
+    import modal
+    import modal_gpu
+    k = max(1, min(modal_gpu.SCENES_MAX_GPUS, len(job["scenes"]))) if kind == "scenes" else 1
+    limit_s = modal_gpu.SCENES_TIMEOUT if kind == "scenes" else modal_gpu.SONG_TIMEOUT
+    worst = k * (limit_s + MODAL_STARTUP_S) / 3600 * MODAL_RATE_PER_HOUR + (0.10 if kind == "scenes" else 0)
+    spent, _ = modal_spent()
+    log(f"  Modal budget: ${spent:.2f} used of ${MODAL_GPU_BUDGET:.0f} (last 31 days); this job at most ${worst:.2f}")
+    if spent + worst > MODAL_GPU_BUDGET:
+        sys.exit(f"STOPPED to protect the free credit: this {kind} job could cost up to ${worst:.2f} and "
+                 f"${spent:.2f} is already used of the ${MODAL_GPU_BUDGET:.0f} budget. Wait for older runs to "
+                 f"fall out of the 31-day window, or use --gpu kaggle.")
+    src = open(os.path.join(JOBS, template), encoding="utf-8").read()
+    out = os.path.join(workdir, "jobs", f"modal-{kind}", "out")
+    shutil.rmtree(out, ignore_errors=True)
+    os.makedirs(out)
+    t0 = time.time()
+    results = []
+    try:
+        with modal.enable_output(), modal_gpu.app.run():
+            if kind == "scenes":
+                modal_gpu.fetch_video_model.remote(job.get("model", "Lightricks/LTX-Video"))
+                codes = [src.replace("__JOB__", json.dumps({**job, "scenes": job["scenes"][i::k]})) for i in range(k)]
+                results = list(modal_gpu.scenes.map(codes, return_exceptions=True))
+            else:
+                results = [modal_gpu.song.remote(src.replace("__JOB__", json.dumps(job)))]
+    finally:
+        # count what ran: measured job time per container, or wall time for a container that did not report
+        wall = time.time() - t0
+        used = sum((r[2] if isinstance(r, tuple) else wall) + MODAL_STARTUP_S for r in results) or k * wall
+        cost = used / 3600 * MODAL_RATE_PER_HOUR + (0.10 if kind == "scenes" else 0)
+        modal_record(kind, cost, f"{len(results)} container(s), {used / 60:.0f} GPU-min")
+        log(f"  Modal: this job ~${cost:.2f}; total ~${modal_spent()[0]:.2f} of ${MODAL_GPU_BUDGET:.0f}")
+    failed = [r for r in results if not isinstance(r, tuple)]
+    results = [r for r in results if isinstance(r, tuple)]
+    infos = []
+    for rc, files, _ in results:
+        for rel, data in files.items():
+            if rel == "info.json":
+                infos.append(json.loads(data))
+                continue
+            for p in [os.path.join(out, rel)] + ([os.path.join(workdir, rel)] if rel.startswith("scenes") else []):
+                os.makedirs(os.path.dirname(p), exist_ok=True)   # finished scenes go straight into the video
+                open(p, "wb").write(data)                         # folder, so a rerun never pays for them twice
+    json.dump(infos[0] if len(infos) == 1 else infos, open(os.path.join(out, "info.json"), "w"), indent=1)
+    bad = [rc for rc, _, _ in results if rc]
+    if bad or failed:
+        sys.exit(f"Modal {kind} job failed (exit codes {bad}, errors {failed}); its messages are printed above. "
+                 "Finished scenes are kept: run the same command again to make only the missing ones.")
+    return out
+
+
 def gpu_run(kind, slug, template, job, workdir, a):
     if a.gpu == "colab":
         return colab_run(kind, template, job, workdir)
+    if a.gpu == "modal":
+        return modal_run(kind, template, job, workdir)
     return kaggle_run(slug, template, job, workdir, wait=not a.no_wait)
 
 
@@ -317,8 +397,9 @@ def main():
     ap.add_argument("topic", help='what the song is about, e.g. "ABC song with friendly animals"')
     ap.add_argument("--minutes", type=float, default=2.5, help="song length, 2 to 4 (default 2.5)")
     ap.add_argument("--no-wait", action="store_true", help="send the Kaggle job and stop (run again to continue)")
-    ap.add_argument("--gpu", choices=["kaggle", "colab"], default="kaggle",
-                    help="where the GPU steps run: kaggle (automatic) or colab (you upload a ready notebook)")
+    ap.add_argument("--gpu", choices=["modal", "kaggle", "colab"], default="modal",
+                    help="where the GPU steps run: modal (automatic, free monthly credit), kaggle (automatic, "
+                         "free but often queued) or colab (you upload a ready notebook)")
     a = ap.parse_args()
     seconds = int(min(240, max(120, a.minutes * 60)))   # ACE-Step sings up to 4 minutes in one go
 

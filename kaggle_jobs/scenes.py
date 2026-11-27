@@ -18,7 +18,8 @@ def sh(cmd):
     subprocess.run(cmd, shell=True, check=True)
 
 
-sh("pip install -q -U diffusers transformers accelerate sentencepiece imageio imageio-ffmpeg")
+if not os.environ.get("JOB_PREINSTALLED"):   # Modal's image already has everything (modal_gpu.py)
+    sh("pip install -q -U diffusers transformers accelerate sentencepiece imageio imageio-ffmpeg")
 
 WORKER = r'''
 import json, os, sys, time, torch

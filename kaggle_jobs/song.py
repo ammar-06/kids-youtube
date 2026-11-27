@@ -23,20 +23,21 @@ def sh(cmd):
 
 # ACE-Step pins exact old versions (e.g. spacy==3.8.4) that do not install on Python 3.13 (Colab and Kaggle now).
 # So: each requirement at its pinned version if that installs, else the newest; then ACE-Step itself without pins.
-sh("rm -rf /tmp/ace-step && git clone -q --depth 1 https://github.com/ace-step/ACE-Step /tmp/ace-step")
-for req in open("/tmp/ace-step/requirements.txt").read().split():
-    name = req.split("==")[0].split(">=")[0]
-    if name in ("torch", "torchaudio", "torchvision"):
-        continue   # keep the GPU builds that are already installed
-    if subprocess.run(f"pip install -q '{req}'", shell=True).returncode and req != name:
-        print(f"{req} does not install here: using the newest {name}", flush=True)
-        if subprocess.run(f"pip install -q '{name}'", shell=True).returncode:
-            print(f"WARNING: {name} did not install", flush=True)
-sh("pip install -q --no-deps /tmp/ace-step")
-sh("pip install -q faster-whisper")
-# transformers==4.50 (ACE-Step's pin) pulls huggingface_hub back to 0.x; the newest diffusers needs hub 1.x
-# (ImportError: resolve_revision). diffusers 0.33.1 is ACE-Step's own era and works with hub 0.x.
-sh("pip install -q diffusers==0.33.1")
+if not os.environ.get("JOB_PREINSTALLED"):   # Modal's image already has everything (modal_gpu.py)
+    sh("rm -rf /tmp/ace-step && git clone -q --depth 1 https://github.com/ace-step/ACE-Step /tmp/ace-step")
+    for req in open("/tmp/ace-step/requirements.txt").read().split():
+        name = req.split("==")[0].split(">=")[0]
+        if name in ("torch", "torchaudio", "torchvision"):
+            continue   # keep the GPU builds that are already installed
+        if subprocess.run(f"pip install -q '{req}'", shell=True).returncode and req != name:
+            print(f"{req} does not install here: using the newest {name}", flush=True)
+            if subprocess.run(f"pip install -q '{name}'", shell=True).returncode:
+                print(f"WARNING: {name} did not install", flush=True)
+    sh("pip install -q --no-deps /tmp/ace-step")
+    sh("pip install -q faster-whisper")
+    # transformers==4.50 (ACE-Step's pin) pulls huggingface_hub back to 0.x; the newest diffusers needs hub 1.x
+    # (ImportError: resolve_revision). diffusers 0.33.1 is ACE-Step's own era and works with hub 0.x.
+    sh("pip install -q diffusers==0.33.1")
 info["install_s"] = round(time.time() - t0)
 
 import torch  # noqa: E402
