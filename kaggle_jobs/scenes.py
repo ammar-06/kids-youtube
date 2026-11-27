@@ -22,20 +22,49 @@ if not os.environ.get("JOB_PREINSTALLED"):   # Modal's image already has everyth
     sh("pip install -q -U diffusers transformers accelerate sentencepiece imageio imageio-ffmpeg")
 
 WORKER = r'''
-import json, os, sys, time, torch
+import gc, json, os, sys, time, torch
 from diffusers import LTXPipeline
 from diffusers.utils import export_to_video
+from transformers import T5EncoderModel, T5TokenizerFast
 
 OUT = os.environ.get("JOB_OUT", "/kaggle/working")
 job = json.loads(open(os.path.join(OUT, "job.json")).read())
 gpu, ngpu = int(sys.argv[1]), int(sys.argv[2])
-scenes = [s for i, s in enumerate(job["scenes"]) if i % ngpu == gpu]
 out = os.path.join(OUT, "scenes")
+scenes = [s for i, s in enumerate(job["scenes"]) if i % ngpu == gpu
+          and not os.path.exists(os.path.join(out, "scene_%03d.mp4" % s["n"]))]
+model = job.get("model", "Lightricks/LTX-Video")
 # bf16 only on GPUs that run it natively (compute 8.0+); a T4 (7.5) "supports" it by emulation, but its conv
 # kernels fail ("GET was unable to find an engine"), so it gets float16
 dtype = torch.bfloat16 if torch.cuda.get_device_capability(0)[0] >= 8 else torch.float16
-pipe = LTXPipeline.from_pretrained(job.get("model", "Lightricks/LTX-Video"), torch_dtype=dtype)
-pipe.enable_model_cpu_offload()   # the T5 text encoder alone is ~9 GB: keep only the active part on the GPU
+
+# Stage 1: only the T5 text encoder (~9.5 GB), loaded straight onto the GPU (free Colab has ~12.7 GB of RAM, too
+# little to hold T5 and the video model in RAM together). bf16 matmuls work on any recent GPU, and T5 overflows in
+# float16. All prompts are turned into embeddings, then T5 is freed.
+t = time.time()
+tok = T5TokenizerFast.from_pretrained(model, subfolder="tokenizer")
+te = T5EncoderModel.from_pretrained(model, subfolder="text_encoder", torch_dtype=torch.bfloat16,
+                                    device_map={"": 0}, low_cpu_mem_usage=True).eval()
+
+
+def encode(text):   # same as LTXPipeline._get_t5_prompt_embeds (max 128 tokens, no mask into T5)
+    ids = tok(text, padding="max_length", max_length=128, truncation=True, add_special_tokens=True,
+              return_tensors="pt")
+    with torch.no_grad():
+        emb = te(ids.input_ids.to("cuda"))[0]
+    return emb.to(dtype).cpu(), ids.attention_mask.bool().cpu()
+
+
+neg = encode(job["negative"])
+embeds = {s["n"]: encode(job["style"] + " " + s["prompt"]) for s in scenes}
+del te
+gc.collect()
+torch.cuda.empty_cache()
+print(f"GPU {gpu}: {len(embeds)} prompts encoded in {round(time.time() - t)} s", flush=True)
+
+# Stage 2: the video model and decoder only (~5 GB), fully on the GPU: no CPU offload, so it is faster too
+pipe = LTXPipeline.from_pretrained(model, text_encoder=None, tokenizer=None, torch_dtype=dtype)
+pipe.to("cuda")
 pipe.vae.enable_tiling()
 times = []
 for s in scenes:
@@ -43,9 +72,10 @@ for s in scenes:
     if os.path.exists(path):
         continue
     t = time.time()
+    emb, mask = embeds[s["n"]]
     frames = pipe(
-        prompt=job["style"] + " " + s["prompt"],
-        negative_prompt=job["negative"],
+        prompt_embeds=emb.to("cuda"), prompt_attention_mask=mask.to("cuda"),
+        negative_prompt_embeds=neg[0].to("cuda"), negative_prompt_attention_mask=neg[1].to("cuda"),
         width=job["width"], height=job["height"], num_frames=job["frames"],
         num_inference_steps=job["steps"], guidance_scale=job.get("guidance", 3.0),
         generator=torch.Generator("cpu").manual_seed(job.get("seed", 42) + s["n"]),
