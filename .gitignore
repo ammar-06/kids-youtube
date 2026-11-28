@@ -24,3 +24,4 @@ stop_awake.flag
 cartoon/__pycache__/
 cartoon3d/*/snap/
 cartoon3d/*/render.log
+cartoon3d/__pycache__/

@@ -30,7 +30,7 @@
     const g = group(parent, [x, y, z]);
     const open = group(g);
     mesh(sph(r), M("#ffffff", 0.15), open, [0, 0, 0], [1, 1.1, 0.6]);
-    mesh(sph(r * 0.7), M(irisCol, 0.15), open, [0, -r * 0.04, r * 0.36], [1, 1.08, 0.5]);
+    mesh(sph(r * 0.76), M(irisCol, 0.15), open, [0, -r * 0.04, r * 0.34], [1, 1.06, 0.5]);
     mesh(sph(r * 0.38), M("#0e0604", 0.15), open, [0, -r * 0.05, r * 0.55], [1, 1.08, 0.4]);
     mesh(sph(r * 0.2), M("#ffffff", 0.05, { emissive: "#ffffff", emissiveIntensity: 0.7 }), open, [r * 0.27, r * 0.28, r * 0.66]);
     mesh(sph(r * 0.09), M("#ffffff", 0.05, { emissive: "#ffffff", emissiveIntensity: 0.7 }), open, [-r * 0.24, -r * 0.3, r * 0.66]);
@@ -48,7 +48,7 @@
 
   function mouthSet(parent, pos, w, tilt = -0.2, lipCol = "#7c1d24", teeth = true) {
     const g = group(parent, pos, [tilt, 0, 0]);
-    const dark = M(lipCol, 0.4), tongue = M("#ff7d8c", 0.45), tooth = M("#ffffff", 0.25);
+    const dark = M(lipCol, 0.95), tongue = M("#ff7d8c", 0.9), tooth = M("#ffffff", 0.6);
     const half = (r) => new T.CircleGeometry(r, 32, Math.PI, Math.PI);
     const smile = group(g);
     mesh(half(w), dark, smile, [0, 0, 0], [1, 0.85, 1]);
@@ -109,20 +109,21 @@
     mesh(sph(0.9), skin, head, [0, 0.05, 0], [1.02, 0.97, 0.92]);
     mesh(sph(0.74), skin, head, [0, -0.25, 0.16], [1.08, 0.86, 0.95]);      // chubby cheeks
     for (const s of [-1, 1]) mesh(sph(0.18), skin, head, [s * 0.9, 0.0, -0.02], [0.55, 1, 0.85]);
-    for (const s of [-1, 1]) mesh(sph(0.18), M("#ff8a80", 0.6, { transparent: true, opacity: 0.4 }), head, [s * 0.5, -0.27, 0.71], [1, 0.62, 0.3], [0, s * 0.55, 0]);
-    mesh(sph(0.1), M("#b8744f", 0.5), head, [0, -0.13, 0.95], [1.1, 0.9, 0.9]);
-    // hair: a fluffy mop on top and at the back, forehead showing, a wave swept forward at the front
-    mesh(new T.SphereGeometry(0.97, 48, 32, 0, Math.PI * 2, 0, 1.45), hair, head, [0, 0.16, -0.08], [1.03, 1.05, 1.0], [-0.72, 0, 0]);
-    mesh(sph(0.9), hair, head, [0, 0.42, -0.12], [1.06, 0.72, 1.0]);
-    for (const [x, y, z, r, sy] of [[-0.55, 0.78, 0.2, 0.34, 0.7], [0.55, 0.78, 0.2, 0.34, 0.7], [-0.2, 0.92, 0.3, 0.36, 0.65],
-      [0.25, 0.94, 0.28, 0.36, 0.65], [-0.82, 0.35, -0.05, 0.26, 1], [0.82, 0.35, -0.05, 0.26, 1], [0, 0.5, -0.72, 0.45, 1]])
-      mesh(sph(r), hair, head, [x, y, z], [1, sy, 1]);
-    mesh(sph(0.34), hair, head, [0.05, 0.92, 0.55], [1.35, 0.5, 0.8], [0.55, 0.25, -0.3]);     // the forward wave
-    mesh(sph(0.24), hair, head, [-0.3, 0.86, 0.6], [1.1, 0.45, 0.7], [0.6, -0.2, 0.35]);
-    for (const s of [-1, 1]) mesh(new T.TorusGeometry(0.15, 0.025, 8, 20, Math.PI * 0.8), M("#3a1d10", 0.5), head, [s * 0.37, 0.5, 0.8], [1, 1, 1], [-0.25, 0, s * 0.08]);
-    const eyes = [eye(head, -0.36, 0.1, 0.69, 0.27, lid), eye(head, 0.36, 0.1, 0.69, 0.27, lid)];
+    for (const s of [-1, 1]) mesh(sph(0.16), M("#ff8a80", 0.6, { transparent: true, opacity: 0.35 }), head, [s * 0.5, -0.24, 0.66], [1, 0.62, 0.3], [0, s * 0.6, 0]);
+    mesh(sph(0.075), M("#b8744f", 0.5), head, [0, -0.13, 0.93], [1.15, 0.9, 0.9]);
+    // hair (from mo-expressions.jpg): tall fluffy top, fringe across the upper forehead, sides over the ear tops,
+    // and a tuft sticking up at the top right
+    mesh(new T.SphereGeometry(0.97, 48, 32, 0, Math.PI * 2, 0, 1.45), hair, head, [0, 0.16, -0.1], [1.04, 1.02, 1.0], [-0.85, 0, 0]);
+    mesh(sph(0.95), hair, head, [0, 0.7, -0.12], [1.06, 0.7, 1.0]);
+    mesh(sph(0.78), hair, head, [0.04, 0.8, 0.3], [1.0, 0.36, 0.62], [0.35, 0, -0.06]);
+    for (const [x, y, z, r] of [[-0.86, 0.32, -0.02, 0.27], [0.86, 0.32, -0.02, 0.27], [-0.5, 0.86, 0.1, 0.38], [0.45, 0.9, 0.1, 0.38], [0, 0.5, -0.75, 0.45]])
+      mesh(sph(r), hair, head, [x, y, z], [1, 0.8, 1]);
+    mesh(sph(0.3), hair, head, [0.32, 1.22, 0.05], [0.55, 1.0, 0.55], [0.1, 0, -0.55]);
+    mesh(sph(0.24), hair, head, [0.08, 1.2, 0.12], [0.5, 0.85, 0.5], [0.2, 0, -0.25]);
+    for (const s of [-1, 1]) mesh(new T.TorusGeometry(0.15, 0.025, 8, 20, Math.PI * 0.8), M("#3a1d10", 0.5), head, [s * 0.36, 0.38, 0.8], [1.0, 0.75, 1], [-0.3, s * 0.35, s * 0.06]);
+    const eyes = [eye(head, -0.36, 0.08, 0.72, 0.22, lid), eye(head, 0.36, 0.08, 0.72, 0.22, lid)];
     for (const e of eyes) e.rotation.y = e.position.x * 0.8;
-    const mouth = mouthSet(head, [0, -0.43, 0.875], 0.2, -0.35);
+    const mouth = mouthSet(head, [0, -0.38, 0.925], 0.18, -0.32);
     return { root, body, head, arms, legs, eyes, mouth, setMouth: mouth.set, setEyes: (n) => setEyes(eyes, n), height: 3.5 };
   }
 
