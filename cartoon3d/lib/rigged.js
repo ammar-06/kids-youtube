@@ -11,7 +11,7 @@
   function b64buf(s) { const bin = atob(s), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u.buffer; }
 
   // parse a base64 GLB; texture comes from an <img> already in the page (no async image decode)
-  function load(b64, img, height, done) {
+  function load(b64, img, height, done, roughImg) {
     new THREE.GLTFLoader().parse(b64buf(b64), "", (g) => {
       const root = new THREE.Group(), model = g.scene;
       const tex = new THREE.Texture(img); tex.flipY = false; tex.encoding = THREE.sRGBEncoding; tex.needsUpdate = true;
@@ -19,7 +19,10 @@
       let skinned = null;
       model.traverse((o) => {
         if (o.isMesh) {
-          o.material = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.75, metalness: 0 });
+          const mp = { map: tex, roughness: 1, metalness: 0 };
+          if (roughImg) { const rt = new THREE.Texture(roughImg); rt.flipY = false; rt.needsUpdate = true; mp.roughnessMap = rt; }
+          else mp.roughness = 0.75;
+          o.material = new THREE.MeshStandardMaterial(mp);
           o.castShadow = true; o.receiveShadow = false; o.frustumCulled = false; if (o.isSkinnedMesh) skinned = o;
         }
       });

@@ -5,12 +5,12 @@
 <script src="https://cdn.jsdelivr.net/npm/three@0.149.0/build/three.min.js"></script>
 <script src="GLTFLoader.js"></script>
 <script src="rigged.js"></script>
-<script src="mo_glb.js"></script><script>window.CAMD = 4.6;</script>
+<script src="mo_glb.js"></script><script>window.CAMD = 4.2;</script>
 <style>*{margin:0;padding:0}html,body{width:1920px;height:1080px;overflow:hidden;background:#bfe6ff}#root{position:relative;width:1920px;height:1080px;background:#bfe6ff}canvas{position:absolute;inset:0}#tex{display:none}
 #lbl{position:absolute;left:60px;top:40px;font:bold 56px sans-serif;color:#fff;text-shadow:0 4px 0 #2a6;z-index:3}</style>
 </head><body>
 <div id="root" data-composition-id="main" data-start="0" data-duration="16" data-width="1920" data-height="1080" data-fps="30">
-<canvas id="c" width="1920" height="1080"></canvas><img id="tex" src="mo.png"><div id="lbl"></div></div>
+<canvas id="c" width="1920" height="1080"></canvas><img id="tex" src="mo.png"><img id="rough" src="mo_rough.png" style="display:none"><div id="lbl"></div></div>
 <script>
 window.__hfTimelinesBuilding = true;
 THREE.ColorManagement.legacyMode = false;
@@ -46,5 +46,5 @@ Rigged.load(GLB.mo, document.getElementById("tex"), 1.9, (c) => {
   window.__timelines = window.__timelines || {}; window.__timelines["main"] = tl;
   window.__hfTimelinesBuilding = false; window.dispatchEvent(new Event("hf-timelines-built"));
   draw(0);
-});
+}, document.getElementById("rough"));
 </script></body></html>
