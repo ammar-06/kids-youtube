@@ -37,3 +37,7 @@ cartoon3d/*/renders/
 cartoon3d/rigtest/*_rough.png
 cartoon3d/compare/
 cartoon3d/compare2d/
+cartoon3d/casttest/assets/
+cartoon3d/movewithme/assets/
+cartoon3d/*/render.log
+videos/*/take_*/ace15_raw/

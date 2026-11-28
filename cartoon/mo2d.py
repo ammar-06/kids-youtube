@@ -66,7 +66,7 @@ def eye(cx, cy, side):
             f'</g>'
             # soft shadow of the upper lid on the eyeball
             f'<ellipse cx="{cx}" cy="{cy - ry - 4}" rx="{rx + 4}" ry="16" fill="#000" opacity="0.12"/>'
-            f'<rect class="mo-lid" x="{cx - rx - 2}" y="{cy - ry - 2}" width="{2 * rx + 4}" height="{2 * ry + 4}" fill="{G("skin")}" '
+            f'<rect class="mo-lid" x="{cx - rx - 2}" y="{cy - ry - 2}" width="{2 * rx + 4}" height="{2 * ry + 4}" fill="{G("skin")}" transform="matrix(1 0 0 0.001 0 {(cy - ry - 2) * 0.999:.2f})" '
             f'/>'
             f'</g>'
             f'<path d="M{cx - rx + 2} {cy - ry * 0.55:.1f} Q{cx} {cy - ry - 7} {cx + rx - 2} {cy - ry * 0.55:.1f}" fill="none" stroke="#2b1a14" stroke-width="3.2" stroke-linecap="round" opacity="0.85"/>'
