@@ -5,7 +5,7 @@
 <script src="https://cdn.jsdelivr.net/npm/three@0.149.0/build/three.min.js"></script>
 <script src="GLTFLoader.js"></script>
 <script src="rigged.js"></script>
-<script src="mo_glb.js"></script>
+<script src="mo_glb.js"></script><script>window.CAMD = 4.6;</script>
 <style>*{margin:0;padding:0}html,body{width:1920px;height:1080px;overflow:hidden;background:#bfe6ff}#root{position:relative;width:1920px;height:1080px;background:#bfe6ff}canvas{position:absolute;inset:0}#tex{display:none}
 #lbl{position:absolute;left:60px;top:40px;font:bold 56px sans-serif;color:#fff;text-shadow:0 4px 0 #2a6;z-index:3}</style>
 </head><body>
@@ -35,7 +35,7 @@ function draw(t) {
   let i = 0; while (i + 1 < PLAN.length && PLAN[i + 1][0] <= t) i++;
   lbl.textContent = "";
   const a = 0.25 * Math.sin(t * 0.35);
-  cam.position.set(Math.sin(a) * 6.2, 1.5, Math.cos(a) * 6.2); cam.lookAt(0, 0.95, 0);
+  cam.position.set(Math.sin(a) * (window.CAMD || 6.2), 1.5, Math.cos(a) * (window.CAMD || 6.2)); cam.lookAt(0, 0.95, 0);
   r.render(scene, cam);
 }
 const clock = { t: 0 };
