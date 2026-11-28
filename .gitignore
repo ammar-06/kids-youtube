@@ -22,3 +22,5 @@ docker/colab/hello.txt
 keep_awake.ps1
 stop_awake.flag
 cartoon/__pycache__/
+cartoon3d/*/snap/
+cartoon3d/*/render.log

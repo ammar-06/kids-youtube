@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=1920, height=1080" />
+<title>3D look test</title>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.15.0/dist/gsap.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.149.0/build/three.min.js"></script>
+<style>
+* { margin: 0; padding: 0; }
+html, body { width: 1920px; height: 1080px; overflow: hidden; background: #8fd3ff; }
+#root { position: relative; width: 1920px; height: 1080px; overflow: hidden; background: #8fd3ff; }
+canvas { position: absolute; inset: 0; width: 1920px; height: 1080px; }
+</style>
+</head>
+<body>
+<div id="root" data-composition-id="main" data-start="0" data-duration="8" data-width="1920" data-height="1080" data-fps="30">
+<canvas id="c" width="1920" height="1080"></canvas>
+</div>
+<script>
+THREE.ColorManagement.legacyMode = false;
+const D = 8;
+const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById("c"), antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(1920, 1080, false);
+renderer.outputEncoding = THREE.sRGBEncoding;
+renderer.toneMapping = THREE.NoToneMapping;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+const scene = new THREE.Scene();
+// sky: big sphere with a vertical gradient
+const skyMat = new THREE.ShaderMaterial({
+  side: THREE.BackSide, depthWrite: false,
+  uniforms: { top: { value: new THREE.Color("#4fb3ff") }, bottom: { value: new THREE.Color("#d8f3ff") } },
+  vertexShader: "varying vec3 p; void main(){ p = (modelMatrix*vec4(position,1.0)).xyz; gl_Position = projectionMatrix*viewMatrix*vec4(p,1.0); }",
+  fragmentShader: "uniform vec3 top; uniform vec3 bottom; varying vec3 p; void main(){ float h = clamp(normalize(p).y*1.6+0.15,0.0,1.0); gl_FragColor = vec4(mix(bottom, top, h),1.0); }"
+});
+scene.add(new THREE.Mesh(new THREE.SphereGeometry(400, 32, 16), skyMat));
+
+const camera = new THREE.PerspectiveCamera(32, 1920 / 1080, 0.1, 1000);
+scene.add(new THREE.HemisphereLight("#eaf6ff", "#5fae45", 0.55));
+const sun = new THREE.DirectionalLight("#fff6e6", 1.15);
+sun.position.set(-12, 22, 14);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -18, right: 18, top: 18, bottom: -18, near: 1, far: 80 });
+sun.shadow.radius = 6;
+sun.shadow.bias = -0.0005;
+scene.add(sun);
+const rim = new THREE.DirectionalLight("#ffe9f5", 0.55);
+rim.position.set(10, 8, -12);
+scene.add(rim);
+
+const M = (c, r = 0.55, extra = {}) => new THREE.MeshStandardMaterial(Object.assign({ color: c, roughness: r, metalness: 0 }, extra));
+function mesh(geo, mat, parent, pos = [0, 0, 0], scale = [1, 1, 1], rot = [0, 0, 0]) {
+  const m = new THREE.Mesh(geo, mat);
+  m.position.set(...pos); m.scale.set(...scale); m.rotation.set(...rot);
+  m.castShadow = true; m.receiveShadow = true;
+  parent.add(m);
+  return m;
+}
+const sph = (r = 1, w = 48, h = 32) => new THREE.SphereGeometry(r, w, h);
+const cap = (r, l) => new THREE.CapsuleGeometry(r, l, 12, 24);
+const group = (parent, pos = [0, 0, 0]) => { const g = new THREE.Group(); g.position.set(...pos); parent.add(g); return g; };
+
+// ---------------------------------------------------------------- ground and farm
+const ground = mesh(new THREE.CircleGeometry(120, 64), M("#5cc23f", 0.95), scene, [0, 0, 0], [1, 1, 1], [-Math.PI / 2, 0, 0]);
+ground.castShadow = false;
+for (const [x, z, s, c] of [[-30, -60, 26, "#9fe07a"], [10, -70, 32, "#8fd86a"], [45, -62, 24, "#a6e383"], [-60, -50, 22, "#94db70"]]) {
+  const h = mesh(sph(1), M(c, 0.95), scene, [x, -s * 0.55, z], [s * 1.4, s, s]);
+  h.castShadow = false;
+}
+function tree(x, z, s) {
+  const g = group(scene, [x, 0, z]);
+  mesh(cap(0.35 * s, 2.2 * s), M("#a8703f", 0.8), g, [0, 1.3 * s, 0]);
+  for (const [dx, dy, dz, r] of [[0, 3.4, 0, 1.6], [-1.1, 2.9, 0.3, 1.15], [1.1, 3.0, 0.2, 1.2], [0, 4.4, -0.2, 1.1]])
+    mesh(sph(r * s), M("#4cbf4a", 0.75), g, [dx * s, dy * s, dz * s]);
+  for (const [dx, dy, dz] of [[-0.8, 3.6, 1.2], [0.9, 3.2, 1.1], [0.2, 4.5, 0.9]])
+    mesh(sph(0.22 * s), M("#ff4b4b", 0.35), g, [dx * s, dy * s, dz * s]);
+}
+tree(-9, -9, 1.2); tree(10, -12, 1.4); tree(-15, -16, 1.0);
+// barn
+const barn = group(scene, [-6.5, 0, -5]);
+mesh(new THREE.BoxGeometry(5, 3.6, 4), M("#e8473c", 0.6), barn, [0, 1.8, 0]);
+const roof = mesh(new THREE.CylinderGeometry(0.01, 3.4, 2.2, 4, 1), M("#8c2f25", 0.6), barn, [0, 4.7, 0], [1.05, 1, 0.85], [0, Math.PI / 4, 0]);
+mesh(new THREE.BoxGeometry(2.2, 2.6, 0.12), M("#9e2d24", 0.6), barn, [0, 1.3, 2.02]);
+for (const r of [0.79, -0.79]) mesh(new THREE.BoxGeometry(3.3, 0.16, 0.08), M("#fff4e2", 0.5), barn, [0, 1.3, 2.1], [1, 1, 1], [0, 0, r]);
+mesh(new THREE.BoxGeometry(2.35, 2.75, 0.06), M("#fff4e2", 0.5), barn, [0, 1.3, 2.05]).scale.set(1, 1, 0.5);
+// fence
+for (let i = -8; i <= 8; i++) mesh(new THREE.BoxGeometry(0.22, 1.2, 0.16), M("#fff6e8", 0.5), scene, [i * 1.1 + 3, 0.6, -3], [1, 1, 1]);
+for (const y of [0.45, 0.95]) mesh(new THREE.BoxGeometry(18, 0.14, 0.1), M("#fff6e8", 0.5), scene, [3, y, -2.95]);
+// flowers
+const rnd = (() => { let s = 7; return () => (s = (s * 16807) % 2147483647) / 2147483647; })();
+for (let i = 0; i < 140; i++) {
+  const x = (rnd() - 0.5) * 34, z = (rnd() - 0.2) * 14;
+  if (Math.abs(x) < 4 && z > -2 && z < 4) continue;
+  const c = ["#ff6b8b", "#ffd23f", "#ffffff", "#b38bff", "#ff9f43"][Math.floor(rnd() * 5)];
+  const f = group(scene, [x, 0.05, z]);
+  mesh(new THREE.CylinderGeometry(0.025, 0.025, 0.3, 6), M("#3c9a2e", 0.8), f, [0, 0.15, 0]);
+  for (let p = 0; p < 5; p++) mesh(sph(0.09, 12, 8), M(c, 0.45), f, [Math.cos(p * 1.2566) * 0.11, 0.32, Math.sin(p * 1.2566) * 0.11], [1, 0.45, 1]);
+  mesh(sph(0.07, 12, 8), M("#ffb300", 0.4), f, [0, 0.34, 0], [1, 0.6, 1]);
+}
+
+for (let i = 0; i < 220; i++) {
+  const x = (rnd() - 0.5) * 40, z = (rnd() - 0.3) * 16;
+  const t = mesh(new THREE.ConeGeometry(0.06, 0.35, 5), M("#3fa52f", 0.9), scene, [x, 0.15, z], [1, 1, 1], [(rnd() - 0.5) * 0.5, 0, (rnd() - 0.5) * 0.5]);
+  t.castShadow = false;
+}
+// ---------------------------------------------------------------- shared face parts
+function eye(parent, x, y, z, r, lidColor) {
+  const g = group(parent, [x, y, z]);
+  mesh(sph(r), M("#ffffff", 0.2), g, [0, 0, 0], [1, 1.12, 0.62]);
+  mesh(sph(r * 0.66), M("#4a2a18", 0.2), g, [0, -r * 0.05, r * 0.38], [1, 1.1, 0.5]);
+  mesh(sph(r * 0.36), M("#120806", 0.2), g, [0, -r * 0.06, r * 0.56], [1, 1.1, 0.4]);
+  mesh(sph(r * 0.2), M("#ffffff", 0.1, { emissive: "#ffffff", emissiveIntensity: 0.6 }), g, [r * 0.26, r * 0.28, r * 0.66]);
+  mesh(sph(r * 0.09), M("#ffffff", 0.1, { emissive: "#ffffff", emissiveIntensity: 0.6 }), g, [-r * 0.22, -r * 0.3, r * 0.66]);
+  const lid = mesh(sph(r * 1.08), M(lidColor, 0.6), g, [0, 0, 0], [1, 1.12, 0.65]);
+  lid.visible = false;
+  g.userData.lid = lid;
+  return g;
+}
+
+// ---------------------------------------------------------------- the toddler (an original character: "Mo")
+const kid = group(scene, [1.8, 0, 1.2]);
+const kidBody = group(kid, [0, 0, 0]);
+const skin = M("#ffc7a3", 0.55), shirt = M("#ffcf3a", 0.65), pants = M("#4f8df0", 0.7), shoe = M("#ff5e5e", 0.5);
+const legL = group(kidBody, [-0.28, 0.95, 0]), legR = group(kidBody, [0.28, 0.95, 0]);
+for (const L of [legL, legR]) { mesh(cap(0.2, 0.5), pants, L, [0, -0.45, 0]); mesh(sph(0.27), shoe, L, [0, -0.86, 0.1], [1, 0.62, 1.4]); }
+mesh(sph(0.62), shirt, kidBody, [0, 1.35, 0], [1, 1.05, 0.86]);
+mesh(sph(0.5), pants, kidBody, [0, 1.0, 0], [1.08, 0.6, 0.9]);
+mesh(new THREE.CircleGeometry(0.17, 5), M("#ff7a3c", 0.5), kidBody, [0, 1.42, 0.535], [1, 1, 1], [0, 0, Math.PI / 2]);
+const armL = group(kidBody, [-0.62, 1.62, 0]), armR = group(kidBody, [0.62, 1.62, 0]);
+for (const [A, s] of [[armL, -1], [armR, 1]]) { mesh(cap(0.15, 0.45), shirt, A, [s * 0.08, -0.32, 0], [1, 1, 1], [0, 0, s * 0.25]); mesh(sph(0.19), skin, A, [s * 0.16, -0.68, 0.04]); }
+const head = group(kidBody, [0, 2.35, 0]);
+mesh(sph(0.92), skin, head, [0, 0.12, 0], [1.05, 1, 0.98]);
+for (const s of [-1, 1]) mesh(sph(0.2), skin, head, [s * 0.95, 0.05, -0.05], [0.6, 1, 0.9]);
+const hairM = M("#6b3b1f", 0.7);
+mesh(sph(0.95), hairM, head, [0, 0.32, -0.1], [1.03, 0.86, 0.98]);
+for (const [x, y, z, r] of [[-0.5, 0.7, 0.55, 0.32], [0, 0.8, 0.62, 0.34], [0.45, 0.72, 0.56, 0.3]]) mesh(sph(r), hairM, head, [x, y, z]);
+const curl = mesh(new THREE.TorusGeometry(0.16, 0.06, 12, 24, Math.PI * 1.5), hairM, head, [0.05, 1.18, 0.1], [1, 1, 1], [0, 0, 0.6]);
+const kidEyes = [eye(head, -0.36, 0.06, 0.84, 0.27, "#ffc7a3"), eye(head, 0.36, 0.06, 0.84, 0.27, "#ffc7a3")];
+for (const e of kidEyes) e.rotation.y = e.position.x * 0.9;
+mesh(sph(0.1), M("#ffb894", 0.5), head, [0, -0.17, 0.92]);
+for (const s of [-1, 1]) mesh(sph(0.17), M("#ff8fa3", 0.6, { transparent: true, opacity: 0.55 }), head, [s * 0.56, -0.2, 0.72], [1, 0.6, 0.4]);
+const kidMouth = mesh(sph(0.17, 32, 16, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2), M("#a3262e", 0.5), head, [0, -0.4, 0.86], [1.25, 0.6, 0.5]);
+kidMouth.geometry = new THREE.SphereGeometry(0.17, 32, 16, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2);
+kid.rotation.y = -0.35;
+
+// ---------------------------------------------------------------- the cow
+const cow = group(scene, [-1.6, 0, 1.0]);
+const cowB = group(cow, [0, 0, 0]);
+const white = M("#ffffff", 0.6), spot = M("#3b2d27", 0.6), pink = M("#ffaec2", 0.5), hoof = M("#6b4a3a", 0.6);
+const cowLegs = [];
+for (const [x, z] of [[-0.7, 0.38], [0.7, 0.38], [-0.7, -0.38], [0.7, -0.38]]) {
+  const L = group(cowB, [x, 0.95, z]);
+  mesh(cap(0.2, 0.55), white, L, [0, -0.45, 0]);
+  mesh(new THREE.CylinderGeometry(0.22, 0.24, 0.22, 24), hoof, L, [0, -0.85, 0]);
+  cowLegs.push(L);
+}
+mesh(cap(0.78, 1.0), white, cowB, [0, 1.45, 0], [1, 1, 0.92], [0, 0, Math.PI / 2]);
+for (const [x, y, z, r] of [[-0.3, 1.95, 0.45, 0.42], [0.55, 1.4, 0.7, 0.32], [-0.9, 1.3, 0.55, 0.3], [0.2, 1.9, -0.5, 0.4]])
+  mesh(sph(r), spot, cowB, [x, y, z], [1, 0.8, 0.35]);
+mesh(sph(0.3), pink, cowB, [-0.2, 0.75, 0], [1, 0.6, 1]);
+const tail = group(cowB, [-1.35, 1.7, 0]);
+mesh(cap(0.05, 0.9), white, tail, [-0.15, -0.45, 0], [1, 1, 1], [0, 0, -0.3]);
+mesh(sph(0.13), spot, tail, [-0.32, -0.95, 0], [1, 1.4, 1]);
+const cowHead = group(cowB, [1.25, 2.25, 0]);
+mesh(sph(0.78), white, cowHead, [0, 0.05, 0], [1, 0.95, 0.95]);
+mesh(sph(0.4), spot, cowHead, [0.25, 0.4, 0.45], [1, 0.8, 0.5]);
+const muzzle = mesh(sph(0.5), pink, cowHead, [0.45, -0.38, 0], [1, 0.72, 1.05]);
+for (const s of [-1, 1]) mesh(sph(0.08), M("#a8455f", 0.5), cowHead, [0.86, -0.3, s * 0.2], [0.5, 1, 1]);
+for (const s of [-1, 1]) {
+  mesh(cap(0.07, 0.25), M("#fff3cc", 0.4), cowHead, [-0.05, 0.85, s * 0.4], [1, 1, 1], [s * 0.4, 0, 0.2]);
+  const ear = mesh(sph(0.28), white, cowHead, [-0.15, 0.45, s * 0.82], [0.5, 0.35, 1], [s * -0.4, 0, 0]);
+}
+const cowEyes = [eye(cowHead, 0.6, 0.3, 0.42, 0.22, "#ffffff"), eye(cowHead, 0.6, 0.3, -0.42, 0.22, "#ffffff")];
+for (const e of cowEyes) e.rotation.y = Math.PI / 2 - 0.5 * Math.sign(e.position.z);
+cowEyes[0].rotation.y = Math.PI / 2 - 0.55;
+cowEyes[1].rotation.y = Math.PI / 2 + 0.55;
+const cowMouth = mesh(sph(0.16), M("#7a1f22", 0.5), cowHead, [0.9, -0.55, 0], [0.4, 0.2, 0.9]);
+mesh(sph(0.16), M("#f2c230", 0.3, { metalness: 0.3 }), cowB, [1.05, 1.55, 0.2]);
+cow.rotation.y = -0.75;
+
+// ---------------------------------------------------------------- animation (driven by the timeline's time)
+const ease = t => t < 0 ? 0 : t > 1 ? 1 : t * t * (3 - 2 * t);
+function blink(eyes, t, times) { const on = times.some(b => t >= b && t < b + 0.12); for (const e of eyes) e.userData.lid.visible = on; }
+function draw(t) {
+  // camera: slow push in
+  const k = ease(t / D);
+  camera.position.set(0.6 - 1.2 * k, 3.2 - 0.5 * k, 13.5 - 3 * k);
+  camera.lookAt(0, 1.7, 0);
+  // kid: bounce to a 0.7 s beat, wave, sing
+  const beat = 0.7, ph = (t % beat) / beat;
+  kidBody.position.y = Math.abs(Math.sin(ph * Math.PI)) * 0.12;
+  kidBody.rotation.z = Math.sin(t / beat * Math.PI) * 0.05;
+  armR.rotation.z = 2.4 + Math.sin(t * 9) * 0.35;
+  armL.rotation.z = -0.25 + Math.sin(t * 4.5) * 0.15;
+  head.rotation.z = Math.sin(t / beat * Math.PI) * 0.08;
+  head.rotation.x = -0.05;
+  kidMouth.scale.y = 0.6 + Math.max(0, Math.sin(t * 7.5)) * 0.9;
+  blink(kidEyes, t, [1.2, 3.9, 6.6]);
+  // cow walks in, then moos
+  const w = ease(t / 2.6);
+  cow.position.x = -6 + 4.4 * w;
+  const walking = t < 2.6;
+  cowLegs.forEach((L, i) => L.rotation.z = walking ? Math.sin(t * 9 + (i % 3 === 0 ? 0 : Math.PI)) * 0.45 : 0);
+  cowB.position.y = walking ? Math.abs(Math.sin(t * 9)) * 0.08 : 0;
+  tail.rotation.z = Math.sin(t * 5) * 0.4;
+  const moo = t > 3.4 && t < 4.6 || t > 5.6 && t < 6.8;
+  const mk = moo ? Math.sin(((t > 5 ? t - 5.6 : t - 3.4) / 1.2) * Math.PI) : 0;
+  cowHead.rotation.z = 0.35 * mk;
+  cowMouth.scale.set(0.4 + 0.3 * mk, 0.2 + 0.9 * mk, 0.9);
+  blink(cowEyes, t, [2.0, 5.0, 7.4]);
+  renderer.render(scene, camera);
+}
+let cur = 0;
+const clock = { t: function (v) { if (v === undefined) return cur; cur = v; draw(v); } };
+const tl = gsap.timeline({ paused: true });
+tl.to(clock, { t: D, duration: D, ease: "none" }, 0);
+window.__timelines["main"] = tl;
+draw(0);
+</script>
+</body>
+</html>
