@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en"><head><meta charset="UTF-8" /><meta name="viewport" content="width=1920, height=1080" />
+<title>Mo rig test</title>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.15.0/dist/gsap.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.149.0/build/three.min.js"></script>
+<script src="GLTFLoader.js"></script>
+<script src="rigged.js"></script>
+<script src="mo_glb.js"></script>
+<style>*{margin:0;padding:0}html,body{width:1920px;height:1080px;overflow:hidden;background:#bfe6ff}#root{position:relative;width:1920px;height:1080px;background:#bfe6ff}canvas{position:absolute;inset:0}#tex{display:none}
+#lbl{position:absolute;left:60px;top:40px;font:bold 56px sans-serif;color:#fff;text-shadow:0 4px 0 #2a6;z-index:3}</style>
+</head><body>
+<div id="root" data-composition-id="main" data-start="0" data-duration="16" data-width="1920" data-height="1080" data-fps="30">
+<canvas id="c" width="1920" height="1080"></canvas><img id="tex" src="mo.png"><div id="lbl"></div></div>
+<script>
+window.__hfTimelinesBuilding = true;
+THREE.ColorManagement.legacyMode = false;
+const r = new THREE.WebGLRenderer({ canvas: document.getElementById("c"), antialias: true, preserveDrawingBuffer: true });
+r.setSize(1920, 1080, false); r.outputEncoding = THREE.sRGBEncoding; r.shadowMap.enabled = true; r.shadowMap.type = THREE.PCFSoftShadowMap;
+const scene = new THREE.Scene(); scene.background = new THREE.Color("#bfe6ff");
+const cam = new THREE.PerspectiveCamera(30, 1920 / 1080, 0.1, 200);
+scene.add(new THREE.HemisphereLight("#ffffff", "#9bbf7a", 0.75));
+const key = new THREE.DirectionalLight("#fff4e0", 0.9); key.position.set(-4, 9, 7); key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048); Object.assign(key.shadow.camera, { left: -4, right: 4, top: 4, bottom: -4 }); scene.add(key);
+const fill = new THREE.DirectionalLight("#dfefff", 0.35); fill.position.set(5, 3, 6); scene.add(fill);
+const ground = new THREE.Mesh(new THREE.CircleGeometry(14, 64), new THREE.MeshStandardMaterial({ color: "#7ccf5a", roughness: 1 }));
+ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; scene.add(ground);
+const PLAN = [[0, "walk"], [3, "wave"], [5, "clap"], [7, "jump"], [9.2, "cheer"], [11, "dance"], [13.5, "point"], [15, "idle"]];
+const lbl = document.getElementById("lbl");
+let mo = null;
+function draw(t) {
+  if (!mo) return;
+  Rigged.pose(mo, t, PLAN);
+  const wx = t < 3 ? -2.4 + 2.4 * Math.min(1, t / 3) : 0;  // walks in from the left, then stays
+  mo.root.position.x = wx; mo.root.rotation.y = t < 3 ? 0.9 * (1 - Math.max(0, (t - 2.4) / 0.6)) : 0;
+  let i = 0; while (i + 1 < PLAN.length && PLAN[i + 1][0] <= t) i++;
+  lbl.textContent = "";
+  const a = 0.25 * Math.sin(t * 0.35);
+  cam.position.set(Math.sin(a) * 6.2, 1.5, Math.cos(a) * 6.2); cam.lookAt(0, 0.95, 0);
+  r.render(scene, cam);
+}
+const clock = { t: 0 };
+Rigged.load(GLB.mo, document.getElementById("tex"), 1.9, (c) => {
+  mo = c; scene.add(c.root);
+  const tl = gsap.timeline({ paused: true });
+  tl.to(clock, { t: 16, duration: 16, ease: "none", onUpdate: () => draw(clock.t) }, 0);
+  window.__timelines = window.__timelines || {}; window.__timelines["main"] = tl;
+  window.__hfTimelinesBuilding = false; window.dispatchEvent(new Event("hf-timelines-built"));
+  draw(0);
+});
+</script></body></html>
