@@ -35,3 +35,5 @@ cartoon3d/*/snap2/
 cartoon3d/*/.hyperframes/
 cartoon3d/*/renders/
 cartoon3d/rigtest/*_rough.png
+cartoon3d/compare/
+cartoon3d/compare2d/

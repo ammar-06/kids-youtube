@@ -72,10 +72,19 @@ hair = hw[weld] > 0.5
 # Taubin smoothing of the hair surface (welded), boundary with non-hair stays put
 P = np.zeros((nw, 3))
 P[weld] = V
+ts = hc.get("tuft_scale")
+if ts:
+    ty = hc.get("tuft_y", 0.9)
+    up = (P[:, 1] > ty) & (hw > 0.5)
+    P[up, 1] = ty + (P[up, 1] - ty) * ts
+    ctr = np.array(hc.get("tuft_center", [0.0, 0.0]))  # pull the tuft points in toward the head (x, z)
+    P[up][:, [0, 2]]
+    k = np.clip((P[up, 1] - ty) / 0.05, 0, 1)[:, None] * (1 - ts) * 0.5
+    P[np.nonzero(up)[0][:, None], [0, 2]] = P[up][:, [0, 2]] * (1 - k) + ctr * k
 move = hw > 0.5
 top = float(hc.get("tuft_y", 0.92))
 keepk = np.ones(nw)
-keepk[weld] = 1 - 0.85 * np.clip((V[:, 1] - (top - 0.04)) / 0.04, 0, 1)
+keepk[weld] = 1 - float(hc.get("tuft_keep", 0.85)) * np.clip((V[:, 1] - (top - 0.04)) / 0.04, 0, 1)
 lam, mu = 0.6, -0.63
 for _ in range(int(hc.get("iters", 25))):
     for f in (lam, mu):
@@ -211,6 +220,8 @@ if paint:
             T3 = blend(T3, zf * soft(win * sz, 0.002), op["shirt"])
         elif op["type"] == "recolor":
             sel2 = zf * (T3.min(2) < op.get("keep_white_min", 170))
+            if "only_dark" in op:
+                sel2 = sel2 * (T3.max(2) < op["only_dark"])
             lum = T3.mean(2, keepdims=True); ref = float(op.get("ref_lum", 140))
             col = np.clip(np.array(op["rgb"], np.float32) * (lum / ref) ** 0.6, 0, 255)
             T3 = T3 * (1 - sel2[..., None]) + col * sel2[..., None]
@@ -234,7 +245,7 @@ for _ in range(6):
     known = np.maximum(known, new.astype(np.float32))
 T3 = np.where(known[..., None] > 0.5, filled, T3)
 out_img = Image.fromarray(np.clip(T3 + 0.5, 0, 255).astype(np.uint8))
-rough = Image.fromarray((np.clip(0.8 - 0.3 * m[..., 0], 0, 1) * 255).astype(np.uint8)).convert("RGB")
+rough = Image.fromarray((np.clip(0.8 - float(hc.get("gloss", 0.3)) * m[..., 0], 0, 1) * 255).astype(np.uint8)).convert("RGB")
 
 # ---------------- write the new zip (same layout as glb2js.py output)
 ol = []
