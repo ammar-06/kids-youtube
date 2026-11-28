@@ -21,3 +21,4 @@ docker/colab/hello.txt
 *.log
 keep_awake.ps1
 stop_awake.flag
+cartoon/__pycache__/
