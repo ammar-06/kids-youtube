@@ -221,6 +221,16 @@ print("@@FILES", " ".join(sorted(os.path.relpath(os.path.join(d, f), "/content/o
 '''
 
 
+def video_ok(path):
+    """True when the file is a complete video (a half-written mp4 has no moov index and ffprobe fails)."""
+    r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path],
+                       capture_output=True, text=True)
+    try:
+        return r.returncode == 0 and float(r.stdout.strip()) > 0.5
+    except ValueError:
+        return False
+
+
 def colab_auto_once(kind, code, workdir, out, name):
     """One Colab session: run the job, stream its log, download its files as they appear. Returns the exit code."""
     jobs = os.path.join(workdir, "jobs", f"colab-{kind}")
@@ -267,6 +277,10 @@ def colab_auto_once(kind, code, workdir, out, name):
                 dest = os.path.join(out, rel)
                 os.makedirs(os.path.dirname(dest), exist_ok=True)
                 colab_cli("download", "-s", name, f"/content/out/{rel}", to_work(dest))
+                if rel.endswith(".mp4") and not video_ok(dest):
+                    # caught while the GPU was still writing it (no index yet): fetch it again next poll
+                    os.remove(dest)
+                    continue
                 got.add(rel)
                 if rel.startswith("scenes/"):   # straight into the video folder too: a rerun never redoes it
                     shutil.copy(dest, os.path.join(workdir, rel))
@@ -290,7 +304,7 @@ def colab_auto_run(kind, template, job, workdir, attempts=3):
         todo = job
         if kind == "scenes":
             left = [s for s in job["scenes"]
-                    if not os.path.exists(os.path.join(workdir, "scenes", f"scene_{s['n']:03d}.mp4"))]
+                    if not video_ok(os.path.join(workdir, "scenes", f"scene_{s['n']:03d}.mp4"))]
             if not left:
                 return out
             todo = {**job, "scenes": left}
@@ -507,8 +521,11 @@ def assemble(folder, song, scene_files, captions, out):
         for s in scene_files:
             f.write(f"file '{os.path.basename(s)}'\n")
     ass = os.path.relpath(captions, folder).replace("\\", "/")
-    # crop the 3:2 clips to 16:9, enlarge to 1080p; hold the last frame if the clips end before the song
-    vf = (f"crop=iw:trunc(iw*9/32)*2,scale=1920:1080:flags=lanczos,fps=24,setsar=1,"
+    # crop the 3:2 clips to 16:9, enlarge to 1080p; hold the last frame if the clips end before the song.
+    # The crop leaves out the top-left corner (x < 12%, y < 12%): LTX-Video sometimes paints a fake TV-channel
+    # logo there (a "BBC" mark, learned from its training videos), and it must never reach YouTube.
+    vf = (f"crop=trunc(iw*0.885/2)*2:trunc(iw*0.885*9/32)*2:iw-ow:trunc(ih*0.12),"
+          f"scale=1920:1080:flags=lanczos,fps=24,setsar=1,"
           f"tpad=stop_mode=clone:stop_duration=30,ass=filename='{ass}'")
     cmd = ["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", os.path.relpath(lst, folder),
            "-i", os.path.relpath(song, folder), "-vf", vf, "-map", "0:v", "-map", "1:a", "-t", f"{dur:.2f}",
@@ -604,7 +621,7 @@ Return JSON: {{"scenes": [{{"n": 1, "prompt": "..."}}, ...]}} with exactly {n} s
 
     # 4. video scenes
     scene_dir = os.path.join(folder, "scenes")
-    missing = [s for s in scenes if not os.path.exists(os.path.join(scene_dir, f"scene_{s['n']:03d}.mp4"))]
+    missing = [s for s in scenes if not video_ok(os.path.join(scene_dir, f"scene_{s['n']:03d}.mp4"))]
     if missing:
         log(f"4/5 {a.gpu.capitalize()} GPU: making {len(missing)} video scenes (LTX-Video)...")
         job = dict(VIDEO, style=L["visual_style"], negative=NEGATIVE, seed=7,
@@ -615,7 +632,7 @@ Return JSON: {{"scenes": [{{"n": 1, "prompt": "..."}}, ...]}} with exactly {n} s
         if os.path.exists(os.path.join(out, "info.json")):
             shutil.copy(os.path.join(out, "info.json"), os.path.join(folder, "scenes_info.json"))
     files = [os.path.join(scene_dir, f"scene_{s['n']:03d}.mp4") for s in scenes]
-    files = [f for f in files if os.path.exists(f)]
+    files = [f for f in files if video_ok(f)]   # a broken clip would make ffmpeg drop the ones after it
     if not files:
         sys.exit("No scenes to put together.")
 
